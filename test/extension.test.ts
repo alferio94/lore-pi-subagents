@@ -41,13 +41,13 @@ function makeTempDir(): string {
 }
 
 function makeFakePi() {
-  const tools = new Map<string, { name: string; execute: (toolCallId: string, params: Record<string, unknown>) => Promise<unknown> }>();
+  const tools = new Map<string, { name: string; execute: (...args: unknown[]) => Promise<unknown> }>();
   const commands: Array<{ name: string; definition: { handler?: (args: string, ctx: unknown) => Promise<void> } }> = [];
   return {
     tools,
     commands,
     api: {
-      registerTool(definition: { name: string; execute: (toolCallId: string, params: Record<string, unknown>) => Promise<unknown> }) {
+      registerTool(definition: { name: string; execute: (...args: unknown[]) => Promise<unknown> }) {
         tools.set(definition.name, definition);
       },
       registerCommand(name: string, definition: { handler?: (args: string, ctx: unknown) => Promise<void> }) {
@@ -79,6 +79,16 @@ process.stdout.write(${JSON.stringify(JSON.stringify(stdoutPayload))});
     { mode: 0o755 },
   );
   return scriptPath;
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+  const startedAt = Date.now();
+  while (!predicate()) {
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error(`Timed out after ${timeoutMs}ms waiting for condition.`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
 }
 
 test("extension entrypoint exports the expected runtime name", () => {
@@ -320,6 +330,143 @@ test("delegate persists needs_user_input envelopes without widening child runtim
       assert.equal(delegated.details.status, "needs_user_input");
       assert.equal(delegated.details.envelope.question, "Ship it?");
       assert.deepEqual(delegated.details.envelope.options, ["yes", "no"]);
+    },
+  );
+});
+
+test("delegate async notifies the parent UI when a background child completes", async () => {
+  const homeDir = makeTempDir();
+  const runRoot = path.join(homeDir, "runs");
+  const fakePi = writeFakePi(homeDir, {
+    status: "completed",
+    summary: "Child finished with spaced\nsummary.",
+    artifacts: [],
+    next: null,
+    question: null,
+    options: [],
+    risks: [],
+    skill_resolution: "none",
+  });
+
+  await withEnv(
+    {
+      HOME: homeDir,
+      LORE_PI_RUNTIME_RUN_ROOT: runRoot,
+      LORE_PI_RUNTIME_MODELS_PATH: path.join(homeDir, "models.json"),
+      LORE_PI_RUNTIME_PI_COMMAND: fakePi,
+      LORE_PI_CHILD: undefined,
+      LORE_PI_RUN_DIR: undefined,
+      LORE_PI_DELEGATION_DEPTH: undefined,
+    },
+    async () => {
+      const notifications: Array<{ message: string; level?: string }> = [];
+      const fake = makeFakePi();
+      runtimeExtension(fake.api as never);
+      const delegate = fake.tools.get(DELEGATE_TOOL_NAME);
+      assert.ok(delegate);
+
+      const delegated = (await delegate.execute(
+        "tool-async-1",
+        { agent: "lore-worker", task: "Inspect the repo.", cwd: homeDir, async: true },
+        undefined,
+        undefined,
+        { ui: { notify(message: string, level?: string) { notifications.push({ message, level }); } } },
+      )) as { details: { id: string; status: string } };
+
+      assert.equal(delegated.details.status, "running");
+      await waitFor(() => notifications.length === 1);
+      assert.equal(notifications[0].level, "info");
+      assert.match(notifications[0].message, new RegExp(`Background delegation ${delegated.details.id} \\(lore-worker\\) completed: Child finished with spaced summary\\.`));
+    },
+  );
+});
+
+test("delegate async notifies needs_user_input as a warning", async () => {
+  const homeDir = makeTempDir();
+  const runRoot = path.join(homeDir, "runs");
+  const fakePi = writeFakePi(homeDir, {
+    status: "needs_user_input",
+    summary: "Approval needed.",
+    artifacts: [],
+    next: null,
+    question: "Ship it?",
+    options: ["yes", "no"],
+    risks: [],
+    skill_resolution: "none",
+  });
+
+  await withEnv(
+    {
+      HOME: homeDir,
+      LORE_PI_RUNTIME_RUN_ROOT: runRoot,
+      LORE_PI_RUNTIME_MODELS_PATH: path.join(homeDir, "models.json"),
+      LORE_PI_RUNTIME_PI_COMMAND: fakePi,
+      LORE_PI_CHILD: undefined,
+      LORE_PI_RUN_DIR: undefined,
+      LORE_PI_DELEGATION_DEPTH: undefined,
+    },
+    async () => {
+      const notifications: Array<{ message: string; level?: string }> = [];
+      const fake = makeFakePi();
+      runtimeExtension(fake.api as never);
+      const delegate = fake.tools.get(DELEGATE_TOOL_NAME);
+      assert.ok(delegate);
+
+      const delegated = (await delegate.execute(
+        "tool-async-needs-input",
+        { agent: "sdd-apply", task: "Need a decision.", cwd: homeDir, async: true },
+        undefined,
+        undefined,
+        { ui: { notify(message: string, level?: string) { notifications.push({ message, level }); } } },
+      )) as { details: { id: string } };
+
+      await waitFor(() => notifications.length === 1);
+      assert.equal(notifications[0].level, "warning");
+      assert.match(notifications[0].message, new RegExp(`Background delegation ${delegated.details.id} \\(sdd-apply\\) needs_user_input: Approval needed\\.`));
+    },
+  );
+});
+
+test("delegate async notifies parse errors without exposing raw output", async () => {
+  const homeDir = makeTempDir();
+  const runRoot = path.join(homeDir, "runs");
+  const fakePiPath = path.join(homeDir, "fake-pi-bad.js");
+  fs.writeFileSync(
+    fakePiPath,
+    "#!/usr/bin/env node\nprocess.stdout.write('not json\\nSECRET_TOKEN_123');\n",
+    { mode: 0o755 },
+  );
+
+  await withEnv(
+    {
+      HOME: homeDir,
+      LORE_PI_RUNTIME_RUN_ROOT: runRoot,
+      LORE_PI_RUNTIME_MODELS_PATH: path.join(homeDir, "models.json"),
+      LORE_PI_RUNTIME_PI_COMMAND: fakePiPath,
+      LORE_PI_CHILD: undefined,
+      LORE_PI_RUN_DIR: undefined,
+      LORE_PI_DELEGATION_DEPTH: undefined,
+    },
+    async () => {
+      const notifications: Array<{ message: string; level?: string }> = [];
+      const fake = makeFakePi();
+      runtimeExtension(fake.api as never);
+      const delegate = fake.tools.get(DELEGATE_TOOL_NAME);
+      assert.ok(delegate);
+
+      const delegated = (await delegate.execute(
+        "tool-async-2",
+        { agent: "lore-worker", task: "Inspect the repo.", cwd: homeDir, async: true },
+        undefined,
+        undefined,
+        { ui: { notify(message: string, level?: string) { notifications.push({ message, level }); } } },
+      )) as { details: { id: string } };
+
+      await waitFor(() => notifications.length === 1);
+      assert.equal(notifications[0].level, "error");
+      assert.match(notifications[0].message, new RegExp(`Background delegation ${delegated.details.id} \\(lore-worker\\) failed:`));
+      assert.doesNotMatch(notifications[0].message, /SECRET_TOKEN_123/);
+      assert.match(notifications[0].message, /single JSON object/i);
     },
   );
 });

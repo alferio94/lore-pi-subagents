@@ -19,6 +19,7 @@ export interface StartDelegationInput {
   task: string;
   cwd?: string;
   runInBackground?: boolean;
+  onBackgroundFinish?: (event: BackgroundDelegationEvent) => void;
 }
 
 export interface StartedDelegation {
@@ -35,6 +36,16 @@ export interface ListedDelegation {
   summary?: string;
   updatedAt: string;
   runDir: string;
+}
+
+export interface BackgroundDelegationEvent {
+  delegationId: string;
+  agent: string;
+  requestedAgent: string;
+  canonicalAgent: string;
+  status: RunRecord["status"];
+  summary?: string;
+  parseError?: string;
 }
 
 const activeBackgroundRuns = new Map<string, Promise<void>>();
@@ -79,7 +90,7 @@ export async function startDelegation(input: StartDelegationInput): Promise<Star
     piCommand: process.env[PI_COMMAND_ENV] ?? undefined,
   });
 
-  const completion = finalizeChildRun(record, launch.child.stdout, launch.child.stderr, launch.completion);
+  const completion = finalizeChildRun(record, launch.child.stdout, launch.child.stderr, launch.completion, input.onBackgroundFinish);
 
   if (input.runInBackground) {
     activeBackgroundRuns.set(record.id, completion.finally(() => activeBackgroundRuns.delete(record.id)));
@@ -170,6 +181,7 @@ async function finalizeChildRun(
   stdout: NodeJS.ReadableStream,
   stderr: NodeJS.ReadableStream,
   completion: Promise<number>,
+  onFinish?: (event: BackgroundDelegationEvent) => void,
 ): Promise<void> {
   const [stdoutText, stderrText] = await Promise.all([readStream(stdout), readStream(stderr), completion]);
   const rawOutput = stdoutText.trim() || stderrText.trim() || JSON.stringify({
@@ -182,11 +194,32 @@ async function finalizeChildRun(
     risks: stderrText.trim() ? [stderrText.trim()] : [],
     skill_resolution: "none",
   });
-  storeRunOutput(record, rawOutput, stderrText);
+  const result = storeRunOutput(record, rawOutput, stderrText);
+  onFinish?.({
+    delegationId: record.id,
+    agent: formatListedAgent(record.requestedAgent, record.canonicalAgent),
+    requestedAgent: record.requestedAgent,
+    canonicalAgent: record.canonicalAgent,
+    status: result.status,
+    summary: result.envelope?.summary,
+    parseError: result.parseError,
+  });
 }
 
 function formatListedAgent(requestedAgent: string, canonicalAgent: string): string {
   return requestedAgent === canonicalAgent ? canonicalAgent : `${requestedAgent} -> ${canonicalAgent}`;
+}
+
+export function formatBackgroundNotification(event: BackgroundDelegationEvent): string {
+  const detail = sanitizeNotificationText(event.parseError ?? event.summary) ?? "No summary provided.";
+  return `Background delegation ${event.delegationId} (${event.agent}) ${event.status}: ${detail}`;
+}
+
+function sanitizeNotificationText(value: string | undefined, maxLength = 240): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const singleLine = value.replace(/\s+/g, " ").trim();
+  if (!singleLine) return undefined;
+  return singleLine.length > maxLength ? `${singleLine.slice(0, maxLength - 1)}…` : singleLine;
 }
 
 async function readStream(stream: NodeJS.ReadableStream): Promise<string> {

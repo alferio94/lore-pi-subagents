@@ -9,7 +9,7 @@ import {
   CHILD_REQUESTED_AGENT_ENV,
 } from "../runtime/child-launch.ts";
 import { discoverAgentRegistry } from "../runtime/agent-registry.ts";
-import { startDelegation, listDelegations, readDelegation } from "../runtime/delegations.ts";
+import { formatBackgroundNotification, startDelegation, listDelegations, readDelegation } from "../runtime/delegations.ts";
 import { readModelRoutingConfig, writeModelRoutingConfig } from "../runtime/model-routing.ts";
 import { openLoreModelsUI } from "../ui/lore-models.ts";
 
@@ -24,6 +24,12 @@ interface AvailableModelDescriptor {
   provider: string;
   id: string;
   name?: string;
+}
+
+interface ToolExecuteContext {
+  ui?: {
+    notify?: (message: string, level?: "info" | "warning" | "error") => void;
+  };
 }
 
 const DELEGATE_PARAMETERS = {
@@ -79,7 +85,7 @@ export default function lorePiRuntime(pi: ExtensionAPI): void {
       label: "Delegate",
       description: "Delegate one bounded task to a Lore child agent.",
       parameters: DELEGATE_PARAMETERS,
-      async execute(_toolCallId, params) {
+      async execute(_toolCallId, params, _signal, _onUpdate, ctx?: ToolExecuteContext) {
         try {
           const registry = discoverAgentRegistry({ cwd: typeof params.cwd === "string" ? params.cwd : process.cwd() });
           const started = await startDelegation({
@@ -88,6 +94,12 @@ export default function lorePiRuntime(pi: ExtensionAPI): void {
             task: String(params.task),
             cwd: typeof params.cwd === "string" ? params.cwd : undefined,
             runInBackground: params.async === true,
+            onBackgroundFinish: params.async === true
+              ? (event) => {
+                  const level = event.status === "completed" ? "info" : event.status === "needs_user_input" ? "warning" : "error";
+                  ctx?.ui?.notify?.(formatBackgroundNotification(event), level);
+                }
+              : undefined,
           });
 
           const status = started.recovery.status?.status ?? started.record.status;
