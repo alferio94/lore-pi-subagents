@@ -1,0 +1,33 @@
+{
+  "name": "lore-pi-runtime",
+  "version": "0.1.0",
+  "description": "Lore-native Pi delegation runtime package",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "lore",
+    "subagents"
+  ],
+  "files": [
+    "src/**/*.ts",
+    "agents/**/*.md",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "pi": {
+    "extensions": [
+      "./src/extension/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^5.9.3"
+  }
+}

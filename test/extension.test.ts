@@ -1,0 +1,319 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import runtimeExtension, {
+  CONTACT_SUPERVISOR_TOOL_NAME,
+  DELEGATE_TOOL_NAME,
+  DELEGATION_LIST_TOOL_NAME,
+  DELEGATION_READ_TOOL_NAME,
+  EXTENSION_NAME,
+  LORE_MODELS_COMMAND,
+} from "../src/extension/index.ts";
+
+async function withEnv<T>(patch: Record<string, string | undefined>, run: () => Promise<T> | T): Promise<T> {
+  const previous = new Map<string, string | undefined>();
+  for (const [key, value] of Object.entries(patch)) {
+    previous.set(key, process.env[key]);
+    if (value === undefined) {
+      delete process.env[key];
+    } else {
+      process.env[key] = value;
+    }
+  }
+
+  try {
+    return await run();
+  } finally {
+    for (const [key, value] of previous.entries()) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+}
+
+function makeTempDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "lore-pi-runtime-extension-"));
+}
+
+function makeFakePi() {
+  const tools = new Map<string, { name: string; execute: (toolCallId: string, params: Record<string, unknown>) => Promise<unknown> }>();
+  const commands: Array<{ name: string }> = [];
+  return {
+    tools,
+    commands,
+    api: {
+      registerTool(definition: { name: string; execute: (toolCallId: string, params: Record<string, unknown>) => Promise<unknown> }) {
+        tools.set(definition.name, definition);
+      },
+      registerCommand(name: string, _definition: unknown) {
+        commands.push({ name });
+      },
+    },
+  };
+}
+
+function writeFakePi(homeDir: string, stdoutPayload: unknown): string {
+  const scriptPath = path.join(homeDir, "fake-pi.js");
+  fs.writeFileSync(
+    scriptPath,
+    `#!/usr/bin/env node\nprocess.stdout.write(${JSON.stringify(JSON.stringify(stdoutPayload))});\n`,
+    { mode: 0o755 },
+  );
+  return scriptPath;
+}
+
+function writeInspectableFakePi(homeDir: string, outputPath: string, stdoutPayload: unknown): string {
+  const scriptPath = path.join(homeDir, "fake-pi-inspect.js");
+  fs.writeFileSync(
+    scriptPath,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.writeFileSync(${JSON.stringify(outputPath)}, JSON.stringify({ args: process.argv.slice(2) }, null, 2));
+process.stdout.write(${JSON.stringify(JSON.stringify(stdoutPayload))});
+`,
+    { mode: 0o755 },
+  );
+  return scriptPath;
+}
+
+test("extension entrypoint exports the expected runtime name", () => {
+  assert.equal(EXTENSION_NAME, "lore-pi-runtime");
+  assert.equal(typeof runtimeExtension, "function");
+});
+
+test("parent runtime registers delegate tools and the lore-models command", async () => {
+  await withEnv({ LORE_PI_CHILD: undefined, LORE_PI_RUN_DIR: undefined }, async () => {
+    const fake = makeFakePi();
+    runtimeExtension(fake.api as never);
+
+    assert.deepEqual([...fake.tools.keys()], [DELEGATE_TOOL_NAME, DELEGATION_READ_TOOL_NAME, DELEGATION_LIST_TOOL_NAME]);
+    assert.deepEqual(fake.commands.map((command) => command.name), [LORE_MODELS_COMMAND]);
+  });
+});
+
+test("child runtime only registers contact_supervisor", async () => {
+  await withEnv({ LORE_PI_CHILD: "1", LORE_PI_RUN_DIR: "/tmp/lore-run" }, async () => {
+    const fake = makeFakePi();
+    runtimeExtension(fake.api as never);
+
+    assert.deepEqual([...fake.tools.keys()], [CONTACT_SUPERVISOR_TOOL_NAME]);
+    assert.deepEqual(fake.commands, []);
+  });
+});
+
+test("contact_supervisor persists a child-only supervisor request envelope", async () => {
+  const runDir = makeTempDir();
+
+  await withEnv(
+    {
+      LORE_PI_CHILD: "1",
+      LORE_PI_RUN_DIR: runDir,
+      LORE_PI_DELEGATION_ID: "dg-321",
+      LORE_PI_REQUESTED_AGENT: "reviewer",
+      LORE_PI_CANONICAL_AGENT: "lore-worker",
+    },
+    async () => {
+      const fake = makeFakePi();
+      runtimeExtension(fake.api as never);
+
+      const tool = fake.tools.get(CONTACT_SUPERVISOR_TOOL_NAME);
+      assert.ok(tool);
+
+      const response = (await tool.execute("tool-supervisor", {
+        reason: "Need product decision",
+        message: "Two approaches remain viable.",
+        question: "Which one should continue?",
+        options: ["A", "B"],
+      })) as { details: { persisted: boolean; requestPath: string } };
+
+      assert.equal(response.details.persisted, true);
+      const saved = JSON.parse(fs.readFileSync(response.details.requestPath, "utf8")) as {
+        delegationId: string;
+        requestedAgent: string;
+        canonicalAgent: string;
+        reason: string;
+        message: string;
+        question: string;
+        options: string[];
+      };
+
+      assert.equal(saved.delegationId, "dg-321");
+      assert.equal(saved.requestedAgent, "reviewer");
+      assert.equal(saved.canonicalAgent, "lore-worker");
+      assert.equal(saved.reason, "Need product decision");
+      assert.equal(saved.message, "Two approaches remain viable.");
+      assert.equal(saved.question, "Which one should continue?");
+      assert.deepEqual(saved.options, ["A", "B"]);
+    },
+  );
+});
+
+test("delegate runs a child, then delegation_read and delegation_list recover the persisted result", async () => {
+  const homeDir = makeTempDir();
+  const runRoot = path.join(homeDir, "runs");
+  const fakePi = writeFakePi(homeDir, {
+    status: "completed",
+    summary: "Child finished.",
+    artifacts: ["artifact-1"],
+    next: "verify",
+    question: null,
+    options: [],
+    risks: [],
+    skill_resolution: "injected",
+  });
+
+  await withEnv(
+    {
+      HOME: homeDir,
+      LORE_PI_RUNTIME_RUN_ROOT: runRoot,
+      LORE_PI_RUNTIME_MODELS_PATH: path.join(homeDir, "models.json"),
+      LORE_PI_RUNTIME_PI_COMMAND: fakePi,
+      LORE_PI_CHILD: undefined,
+      LORE_PI_RUN_DIR: undefined,
+    },
+    async () => {
+      const fake = makeFakePi();
+      runtimeExtension(fake.api as never);
+
+      const delegate = fake.tools.get(DELEGATE_TOOL_NAME);
+      const read = fake.tools.get(DELEGATION_READ_TOOL_NAME);
+      const list = fake.tools.get(DELEGATION_LIST_TOOL_NAME);
+      assert.ok(delegate);
+      assert.ok(read);
+      assert.ok(list);
+
+      const delegated = (await delegate.execute("tool-1", {
+        agent: "lore-worker",
+        task: "Inspect the repo.",
+        cwd: homeDir,
+      })) as { details: { id: string; status: string; envelope: { summary: string } } };
+
+      assert.match(delegated.details.id, /^dg-/);
+      assert.equal(delegated.details.status, "completed");
+      assert.equal(delegated.details.envelope.summary, "Child finished.");
+
+      const readBack = (await read.execute("tool-2", { id: delegated.details.id })) as {
+        details: { status: string; envelope: { summary: string } };
+      };
+      assert.equal(readBack.details.status, "completed");
+      assert.equal(readBack.details.envelope.summary, "Child finished.");
+
+      const listed = (await list.execute("tool-3", {})) as {
+        details: { runs: Array<{ id: string; status: string; summary: string }> };
+      };
+      assert.equal(listed.details.runs.length, 1);
+      assert.equal(listed.details.runs[0].id, delegated.details.id);
+      assert.equal(listed.details.runs[0].status, "completed");
+      assert.equal(listed.details.runs[0].summary, "Child finished.");
+    },
+  );
+});
+
+test("delegate persists needs_user_input envelopes without widening child runtime tools", async () => {
+  const homeDir = makeTempDir();
+  const runRoot = path.join(homeDir, "runs");
+  const fakePi = writeFakePi(homeDir, {
+    status: "needs_user_input",
+    summary: "Need approval.",
+    artifacts: ["artifact-2"],
+    next: null,
+    question: "Ship it?",
+    options: ["yes", "no"],
+    risks: ["Could block rollout."],
+    skill_resolution: "injected",
+  });
+
+  await withEnv(
+    {
+      HOME: homeDir,
+      LORE_PI_RUNTIME_RUN_ROOT: runRoot,
+      LORE_PI_RUNTIME_MODELS_PATH: path.join(homeDir, "models.json"),
+      LORE_PI_RUNTIME_PI_COMMAND: fakePi,
+      LORE_PI_CHILD: undefined,
+      LORE_PI_RUN_DIR: undefined,
+    },
+    async () => {
+      const fake = makeFakePi();
+      runtimeExtension(fake.api as never);
+      const delegate = fake.tools.get(DELEGATE_TOOL_NAME);
+      assert.ok(delegate);
+
+      const delegated = (await delegate.execute("tool-4", {
+        agent: "sdd-apply",
+        task: "Need a decision.",
+        cwd: homeDir,
+      })) as { details: { status: string; envelope: { question: string; options: string[] } } };
+
+      assert.equal(delegated.details.status, "needs_user_input");
+      assert.equal(delegated.details.envelope.question, "Ship it?");
+      assert.deepEqual(delegated.details.envelope.options, ["yes", "no"]);
+    },
+  );
+});
+
+test("delegate ignores project-local .pi/lore/models.json overrides and uses the global route store", async () => {
+  const homeDir = makeTempDir();
+  const projectDir = makeTempDir();
+  const runRoot = path.join(homeDir, "runs");
+  const childArgsPath = path.join(homeDir, "child-args.json");
+  const fakePi = writeInspectableFakePi(homeDir, childArgsPath, {
+    status: "completed",
+    summary: "Child finished.",
+    artifacts: [],
+    next: null,
+    question: null,
+    options: [],
+    risks: [],
+    skill_resolution: "none",
+  });
+
+  const globalModelsPath = path.join(homeDir, ".pi", "agent", "lore", "models.json");
+  fs.mkdirSync(path.dirname(globalModelsPath), { recursive: true });
+  fs.writeFileSync(
+    globalModelsPath,
+    `${JSON.stringify({ version: 1, defaults: { nonSdd: { model: "global/non-sdd-model" } }, agents: {} }, null, 2)}\n`,
+    "utf8",
+  );
+
+  const projectLocalModelsPath = path.join(projectDir, ".pi", "lore", "models.json");
+  fs.mkdirSync(path.dirname(projectLocalModelsPath), { recursive: true });
+  fs.writeFileSync(
+    projectLocalModelsPath,
+    `${JSON.stringify({ version: 1, defaults: { nonSdd: { model: "project-local-model" } }, agents: {} }, null, 2)}\n`,
+    "utf8",
+  );
+
+  await withEnv(
+    {
+      HOME: homeDir,
+      LORE_PI_RUNTIME_RUN_ROOT: runRoot,
+      LORE_PI_RUNTIME_PI_COMMAND: fakePi,
+      LORE_PI_RUNTIME_MODELS_PATH: globalModelsPath,
+      LORE_PI_CHILD: undefined,
+      LORE_PI_RUN_DIR: undefined,
+    },
+    async () => {
+      const fake = makeFakePi();
+      runtimeExtension(fake.api as never);
+      const delegate = fake.tools.get(DELEGATE_TOOL_NAME);
+      assert.ok(delegate);
+
+      await delegate.execute("tool-5", {
+        agent: "lore-worker",
+        task: "Inspect the repo.",
+        cwd: projectDir,
+      });
+
+      const recorded = JSON.parse(fs.readFileSync(childArgsPath, "utf8")) as { args: string[] };
+      const modelFlagIndex = recorded.args.indexOf("--model");
+      assert.notEqual(modelFlagIndex, -1);
+      assert.equal(recorded.args[modelFlagIndex + 1], "global/non-sdd-model");
+      assert.equal(recorded.args.includes("project-local-model"), false);
+    },
+  );
+});

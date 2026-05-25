@@ -1,0 +1,123 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import {
+  CHILD_CANONICAL_AGENT_ENV,
+  CHILD_DELEGATION_ID_ENV,
+  CHILD_DEPTH_ENV,
+  CHILD_MARKER_ENV,
+  CHILD_REQUESTED_AGENT_ENV,
+  CHILD_RUN_DIR_ENV,
+  launchChildProcess,
+  prepareChildLaunch,
+} from "../src/runtime/child-launch.ts";
+
+function makeTempDir(): string {
+  return fs.mkdtempSync(path.join(os.tmpdir(), "lore-pi-runtime-child-"));
+}
+
+test("prepareChildLaunch enforces depth=1 and deduplicates tool/extension filters", async () => {
+  const root = makeTempDir();
+
+  const prepared = await prepareChildLaunch({
+    cwd: root,
+    prompt: "Task: inspect repo",
+    delegationId: "dg-123",
+    requestedAgent: "reviewer",
+    canonicalAgent: "lore-worker",
+    runDir: path.join(root, "runs", "dg-123"),
+    tools: ["read", "bash", "read", "contact_supervisor"],
+    extensionSources: ["./src/extension/index.ts", "./src/extension/index.ts"],
+    model: "openai/gpt-5-mini",
+    thinking: "low",
+  });
+
+  assert.equal(prepared.command, "pi");
+  assert.deepEqual(prepared.args, [
+    "--mode",
+    "json",
+    "-p",
+    "--no-session",
+    "--no-extensions",
+    "--extension",
+    path.resolve("./src/extension/index.ts"),
+    "--tools",
+    "read,bash,contact_supervisor",
+    "--model",
+    "openai/gpt-5-mini",
+    "--thinking",
+    "low",
+    "Task: inspect repo",
+  ]);
+  assert.equal(prepared.env[CHILD_MARKER_ENV], "1");
+  assert.equal(prepared.env[CHILD_DEPTH_ENV], "1");
+  assert.equal(prepared.env[CHILD_DELEGATION_ID_ENV], "dg-123");
+  assert.equal(prepared.env[CHILD_REQUESTED_AGENT_ENV], "reviewer");
+  assert.equal(prepared.env[CHILD_CANONICAL_AGENT_ENV], "lore-worker");
+  assert.equal(prepared.env[CHILD_RUN_DIR_ENV], path.resolve(root, "runs", "dg-123"));
+
+  await prepared.cleanup();
+});
+
+test("prepareChildLaunch rejects nested delegation beyond max depth", async () => {
+  await assert.rejects(
+    () =>
+      prepareChildLaunch({
+        cwd: makeTempDir(),
+        prompt: "Task: recurse",
+        delegationId: "dg-nested",
+        requestedAgent: "lore-worker",
+        canonicalAgent: "lore-worker",
+        runDir: makeTempDir(),
+        env: { [CHILD_DEPTH_ENV]: "1" },
+      }),
+    /exceeds max depth/i,
+  );
+});
+
+test("launchChildProcess passes constrained args/env to the child and cleans temp prompt files", async () => {
+  const root = makeTempDir();
+  const fakePi = path.join(root, "fake-pi.js");
+  const outputPath = path.join(root, "child-output.json");
+  fs.writeFileSync(
+    fakePi,
+    `#!/usr/bin/env node
+const fs = require("node:fs");
+fs.writeFileSync(process.env.CHILD_TEST_OUTPUT, JSON.stringify({ args: process.argv.slice(2), env: { child: process.env.${CHILD_MARKER_ENV}, depth: process.env.${CHILD_DEPTH_ENV}, runDir: process.env.${CHILD_RUN_DIR_ENV}, delegationId: process.env.${CHILD_DELEGATION_ID_ENV}, requestedAgent: process.env.${CHILD_REQUESTED_AGENT_ENV}, canonicalAgent: process.env.${CHILD_CANONICAL_AGENT_ENV} } }, null, 2));
+`,
+    { mode: 0o755 },
+  );
+
+  const launched = await launchChildProcess({
+    cwd: root,
+    prompt: "Task: do the thing",
+    delegationId: "dg-456",
+    requestedAgent: "sdd-apply",
+    canonicalAgent: "sdd-apply",
+    runDir: path.join(root, "runs", "dg-456"),
+    tools: ["read", "write", "contact_supervisor"],
+    extensionSources: ["./src/extension/index.ts"],
+    systemPrompt: "You are a child runtime.",
+    piCommand: fakePi,
+    env: { CHILD_TEST_OUTPUT: outputPath },
+  });
+
+  const exitCode = await launched.completion;
+  assert.equal(exitCode, 0);
+
+  const payload = JSON.parse(fs.readFileSync(outputPath, "utf8")) as {
+    args: string[];
+    env: Record<string, string>;
+  };
+
+  assert.deepEqual(payload.args, launched.prepared.args);
+  assert.equal(payload.env.child, "1");
+  assert.equal(payload.env.depth, "1");
+  assert.equal(payload.env.runDir, path.resolve(root, "runs", "dg-456"));
+  assert.equal(payload.env.delegationId, "dg-456");
+  assert.equal(payload.env.requestedAgent, "sdd-apply");
+  assert.equal(payload.env.canonicalAgent, "sdd-apply");
+  assert.equal(launched.prepared.systemPromptPath ? fs.existsSync(launched.prepared.systemPromptPath) : false, false);
+});
