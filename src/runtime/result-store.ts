@@ -94,7 +94,7 @@ export function storeRunOutput(record: RunRecord, rawOutput: string): StoredRunR
   writeTextAtomic(record.files.rawOutput, rawOutput);
 
   const timestamp = new Date().toISOString();
-  const parsed = parseEnvelope(rawOutput);
+  const parsed = parseEnvelope(extractEnvelopeOutput(rawOutput));
   const status: StoredRunStatus = parsed.ok
     ? {
         status: parsed.envelope.status,
@@ -142,7 +142,7 @@ export function recoverRun(runDir: string): RecoveredRun {
   let result = fs.existsSync(resultPath) ? readJson<StoredRunResult>(resultPath) : null;
 
   if ((!status || !result) && rawOutput) {
-    const parsed = parseEnvelope(rawOutput);
+    const parsed = parseEnvelope(extractEnvelopeOutput(rawOutput));
     const updatedAt = new Date().toISOString();
     if (parsed.ok) {
       status ??= {
@@ -178,6 +178,52 @@ export function recoverRun(runDir: string): RecoveredRun {
     result,
     rawOutput,
   };
+}
+
+export function extractEnvelopeOutput(rawOutput: string): string {
+  const direct = parseEnvelope(rawOutput);
+  if (direct.ok) {
+    return rawOutput;
+  }
+
+  const fromPiJSON = extractLastAssistantTextFromPiJSON(rawOutput);
+  return fromPiJSON ?? rawOutput;
+}
+
+function extractLastAssistantTextFromPiJSON(rawOutput: string): string | null {
+  let lastAssistantText: string | null = null;
+
+  for (const line of rawOutput.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    let event: unknown;
+    try {
+      event = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+
+    if (!isRecord(event) || event.type !== "message_end") continue;
+    const message = event.message;
+    if (!isRecord(message) || message.role !== "assistant" || !Array.isArray(message.content)) continue;
+
+    const text = message.content
+      .filter((part): part is { type: string; text: string } => isRecord(part) && part.type === "text" && typeof part.text === "string")
+      .map((part) => part.text)
+      .join("\n")
+      .trim();
+
+    if (text) {
+      lastAssistantText = text;
+    }
+  }
+
+  return lastAssistantText;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function updateRecordStatus(recordPath: string, status: RunStatus, updatedAt: string): void {

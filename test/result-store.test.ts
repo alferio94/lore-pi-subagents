@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { createRunRecord, recoverRun, storeRunOutput } from "../src/runtime/result-store.ts";
+import { createRunRecord, extractEnvelopeOutput, recoverRun, storeRunOutput } from "../src/runtime/result-store.ts";
 
 function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "lore-pi-runtime-store-"));
@@ -88,6 +88,38 @@ test("recoverRun reconstructs result from raw output when result files are missi
   const recovered = recoverRun(record.runDir);
   assert.equal(recovered.status?.status, "needs_user_input");
   assert.equal(recovered.result?.envelope?.question, "Ship it?");
+});
+
+test("storeRunOutput extracts final assistant envelope from Pi JSON event streams", () => {
+  const rootDir = makeTempDir();
+  const record = createRunRecord({
+    rootDir,
+    delegationId: "dg-jsonl",
+    requestedAgent: "lore-worker",
+    canonicalAgent: "lore-worker",
+    cwd: "/repo",
+  });
+
+  const envelope = JSON.stringify({
+    status: "completed",
+    summary: "smoke",
+    artifacts: [],
+    next: null,
+    question: null,
+    options: [],
+    risks: [],
+    skill_resolution: "none",
+  });
+  const rawOutput = [
+    JSON.stringify({ type: "session", id: "session-1" }),
+    JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: envelope }] } }),
+  ].join("\n");
+
+  assert.equal(extractEnvelopeOutput(rawOutput), envelope);
+  const result = storeRunOutput(record, rawOutput);
+  assert.equal(result.status, "completed");
+  assert.equal(result.envelope?.summary, "smoke");
+  assert.equal(fs.readFileSync(record.files.rawOutput, "utf8"), rawOutput);
 });
 
 test("storeRunOutput preserves malformed raw output for recovery", () => {
