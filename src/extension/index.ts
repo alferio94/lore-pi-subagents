@@ -20,6 +20,12 @@ export const DELEGATION_LIST_TOOL_NAME = "delegation_list";
 export const CONTACT_SUPERVISOR_TOOL_NAME = "contact_supervisor";
 export const LORE_MODELS_COMMAND = "lore-models";
 
+interface AvailableModelDescriptor {
+  provider: string;
+  id: string;
+  name?: string;
+}
+
 const DELEGATE_PARAMETERS = {
   type: "object",
   additionalProperties: false,
@@ -185,7 +191,12 @@ export default function lorePiRuntime(pi: ExtensionAPI): void {
       description: "Open the global /lore-models routing editor.",
       handler: async (_args, ctx) => {
         const registry = discoverAgentRegistry({ cwd: ctx.cwd });
+        const availableModels = await getAvailableModelRefs(ctx);
+        if (availableModels.length === 0) {
+          ctx.ui.notify("No available Pi models detected; /lore-models will allow manual model entry only.", "warning");
+        }
         await openLoreModelsUI(ctx as never, {
+          availableModels,
           agentNames: registry.agents.map((agent) => agent.name),
           readConfig: readModelRoutingConfig,
           writeConfig: writeModelRoutingConfig,
@@ -234,6 +245,25 @@ export default function lorePiRuntime(pi: ExtensionAPI): void {
       };
     },
   });
+}
+
+async function getAvailableModelRefs(ctx: { modelRegistry?: { getAvailable?: (() => unknown) | undefined } | undefined }): Promise<string[]> {
+  const registry = ctx.modelRegistry;
+  if (!registry?.getAvailable) return [];
+  try {
+    const available = await Promise.resolve(registry.getAvailable.call(registry));
+    if (!Array.isArray(available)) return [];
+    return available
+      .map((model: AvailableModelDescriptor) => formatModelRef(model))
+      .filter((model): model is string => Boolean(model));
+  } catch {
+    return [];
+  }
+}
+
+function formatModelRef(model: AvailableModelDescriptor): string | undefined {
+  if (!model?.provider || !model?.id) return undefined;
+  return `${model.provider}/${model.id}`;
 }
 
 function isChildRuntime(): boolean {

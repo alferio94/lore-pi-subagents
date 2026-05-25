@@ -42,7 +42,7 @@ function makeTempDir(): string {
 
 function makeFakePi() {
   const tools = new Map<string, { name: string; execute: (toolCallId: string, params: Record<string, unknown>) => Promise<unknown> }>();
-  const commands: Array<{ name: string }> = [];
+  const commands: Array<{ name: string; definition: { handler?: (args: string, ctx: unknown) => Promise<void> } }> = [];
   return {
     tools,
     commands,
@@ -50,8 +50,8 @@ function makeFakePi() {
       registerTool(definition: { name: string; execute: (toolCallId: string, params: Record<string, unknown>) => Promise<unknown> }) {
         tools.set(definition.name, definition);
       },
-      registerCommand(name: string, _definition: unknown) {
-        commands.push({ name });
+      registerCommand(name: string, definition: { handler?: (args: string, ctx: unknown) => Promise<void> }) {
+        commands.push({ name, definition });
       },
     },
   };
@@ -94,6 +94,58 @@ test("parent runtime registers delegate tools and the lore-models command", asyn
     assert.deepEqual([...fake.tools.keys()], [DELEGATE_TOOL_NAME, DELEGATION_READ_TOOL_NAME, DELEGATION_LIST_TOOL_NAME]);
     assert.deepEqual(fake.commands.map((command) => command.name), [LORE_MODELS_COMMAND]);
   });
+});
+
+test("lore-models command lists available Pi models from the model registry", async () => {
+  const homeDir = makeTempDir();
+  const projectDir = makeTempDir();
+
+  await withEnv(
+    {
+      HOME: homeDir,
+      LORE_PI_RUNTIME_MODELS_PATH: path.join(homeDir, ".pi", "agent", "lore", "models.json"),
+      LORE_PI_CHILD: undefined,
+      LORE_PI_RUN_DIR: undefined,
+    },
+    async () => {
+      const fake = makeFakePi();
+      runtimeExtension(fake.api as never);
+      const command = fake.commands.find((candidate) => candidate.name === LORE_MODELS_COMMAND);
+      assert.ok(command?.definition.handler);
+
+      const selections = ["lore-worker: inherit", "Use model: openai-codex/gpt-5.5", "Done (model=openai-codex/gpt-5.5)", "Done"];
+      const ctx = {
+        cwd: projectDir,
+        modelRegistry: {
+          getAvailable() {
+            return [
+              { provider: "openai-codex", id: "gpt-5.5" },
+              { provider: "anthropic", id: "claude-sonnet-4-5" },
+            ];
+          },
+        },
+        ui: {
+          async select(_title: string, items: string[]) {
+            const next = selections.shift();
+            assert.ok(next, `unexpected select call with items: ${items.join(", ")}`);
+            assert.ok(items.includes(next), `selection ${next} not found in ${items.join(", ")}`);
+            return next;
+          },
+          async input() {
+            throw new Error("manual model input should not be requested when models are available");
+          },
+          notify() {},
+        },
+      };
+
+      await command.definition.handler("", ctx);
+
+      const saved = JSON.parse(fs.readFileSync(path.join(homeDir, ".pi", "agent", "lore", "models.json"), "utf8")) as {
+        agents: Record<string, { model?: string }>;
+      };
+      assert.equal(saved.agents["lore-worker"].model, "openai-codex/gpt-5.5");
+    },
+  );
 });
 
 test("child runtime only registers contact_supervisor", async () => {

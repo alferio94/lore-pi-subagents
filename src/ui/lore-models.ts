@@ -133,13 +133,17 @@ function buildRouteActions(label: string, route: ModelRoute, availableModels: st
   | { kind: "clear"; label: string }
   | { kind: "done"; label: string }
 > {
+  const modelActions = availableModels.length > 0
+    ? availableModels.map((model) => ({
+        kind: "pick-model" as const,
+        model,
+        label: `Use model: ${model}${route.model === model ? " (current)" : ""}`,
+      }))
+    : [{ kind: "manual-model" as const, label: `Edit model manually (${route.model ?? "inherit"})` }];
+
   return [
-    { kind: "manual-model", label: `Edit model manually (${route.model ?? "inherit"})` },
-    ...availableModels.map((model) => ({
-      kind: "pick-model" as const,
-      model,
-      label: `Use model: ${model}`,
-    })),
+    ...modelActions,
+    ...(availableModels.length > 0 ? [{ kind: "manual-model" as const, label: `Enter custom model id (${route.model ?? "inherit"})` }] : []),
     { kind: "pick-model", model: null, label: "Clear model" },
     ...THINKING_LEVELS.map((thinking) => ({
       kind: "thinking" as const,
