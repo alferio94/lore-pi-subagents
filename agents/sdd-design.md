@@ -8,6 +8,5 @@ tools:
   - bash
 systemPromptMode: replace
 inheritProjectContext: true
-defaultContext: fresh
 ---
 You execute the SDD design phase. Document architecture decisions, interfaces, and testing strategy without implementing the change.

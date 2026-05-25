@@ -3,6 +3,7 @@ import type { Readable } from "node:stream";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { SystemPromptMode } from "./types.ts";
 
 export const CHILD_MARKER_ENV = "LORE_PI_CHILD";
 export const CHILD_DEPTH_ENV = "LORE_PI_DELEGATION_DEPTH";
@@ -22,6 +23,8 @@ export interface PrepareChildLaunchInput {
   tools?: string[];
   extensionSources?: string[];
   systemPrompt?: string;
+  systemPromptMode?: SystemPromptMode;
+  inheritProjectContext?: boolean;
   model?: string;
   thinking?: string;
   env?: NodeJS.ProcessEnv;
@@ -65,6 +68,9 @@ export async function prepareChildLaunch(input: PrepareChildLaunchInput): Promis
   };
 
   const args = ["--mode", "json", "-p", "--no-session", "--no-extensions"];
+  if (input.inheritProjectContext === false) {
+    args.push("--no-context-files");
+  }
   for (const extensionSource of extensions) {
     args.push("--extension", extensionSource);
   }
@@ -81,7 +87,7 @@ export async function prepareChildLaunch(input: PrepareChildLaunchInput): Promis
   let systemPromptPath: string | undefined;
   if (input.systemPrompt?.trim()) {
     systemPromptPath = await writeTempPromptFile(input.systemPrompt);
-    args.push("--append-system-prompt", systemPromptPath);
+    args.push(input.systemPromptMode === "append" ? "--append-system-prompt" : "--system-prompt", systemPromptPath);
   }
 
   args.push(input.prompt);

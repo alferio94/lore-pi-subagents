@@ -29,7 +29,7 @@ async function withCleanChildEnv<T>(run: () => Promise<T> | T): Promise<T> {
   }
 }
 
-test("prepareChildLaunch enforces depth=1 and deduplicates tool/extension filters", async () => {
+test("prepareChildLaunch enforces depth=1, can disable project context, and deduplicates tool/extension filters", async () => {
   const root = makeTempDir();
 
   const prepared = await withCleanChildEnv(() => prepareChildLaunch({
@@ -41,6 +41,7 @@ test("prepareChildLaunch enforces depth=1 and deduplicates tool/extension filter
     runDir: path.join(root, "runs", "dg-123"),
     tools: ["read", "bash", "read", "contact_supervisor"],
     extensionSources: ["./src/extension/index.ts", "./src/extension/index.ts"],
+    inheritProjectContext: false,
     model: "openai/gpt-5-mini",
     thinking: "low",
   }));
@@ -52,6 +53,7 @@ test("prepareChildLaunch enforces depth=1 and deduplicates tool/extension filter
     "-p",
     "--no-session",
     "--no-extensions",
+    "--no-context-files",
     "--extension",
     path.resolve("./src/extension/index.ts"),
     "--tools",
@@ -111,6 +113,7 @@ fs.writeFileSync(process.env.CHILD_TEST_OUTPUT, JSON.stringify({ args: process.a
     tools: ["read", "write", "contact_supervisor"],
     extensionSources: ["./src/extension/index.ts"],
     systemPrompt: "You are a child runtime.",
+    systemPromptMode: "replace",
     piCommand: fakePi,
     env: { CHILD_TEST_OUTPUT: outputPath },
   }));
@@ -130,5 +133,26 @@ fs.writeFileSync(process.env.CHILD_TEST_OUTPUT, JSON.stringify({ args: process.a
   assert.equal(payload.env.delegationId, "dg-456");
   assert.equal(payload.env.requestedAgent, "sdd-apply");
   assert.equal(payload.env.canonicalAgent, "sdd-apply");
+  assert.match(payload.args.join(" "), /--system-prompt/);
+  assert.doesNotMatch(payload.args.join(" "), /--append-system-prompt/);
   assert.equal(launched.prepared.systemPromptPath ? fs.existsSync(launched.prepared.systemPromptPath) : false, false);
+});
+
+test("prepareChildLaunch uses append flag when systemPromptMode=append", async () => {
+  const prepared = await withCleanChildEnv(() => prepareChildLaunch({
+    cwd: makeTempDir(),
+    prompt: "Task: inspect repo",
+    delegationId: "dg-789",
+    requestedAgent: "reviewer",
+    canonicalAgent: "lore-worker",
+    runDir: makeTempDir(),
+    systemPrompt: "Extra instructions.",
+    systemPromptMode: "append",
+  }));
+
+  assert.ok(prepared.systemPromptPath);
+  assert.ok(prepared.args.includes("--append-system-prompt"));
+  assert.equal(prepared.args.includes("--system-prompt"), false);
+
+  await prepared.cleanup();
 });

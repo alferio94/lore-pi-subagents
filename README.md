@@ -10,6 +10,7 @@ Greenfield Pi package scaffold for Lore-native delegation.
 - Child-only `contact_supervisor` escalation hook
 - Global Lore model routing UI backed only by `~/.pi/agent/lore/models.json`, now using a step-by-step route → model → thinking → save flow
 - Strict JSON envelope parsing for worker and SDD child results
+- Lore memory tools are granted to all child agents by default; `lore:*` remains available as an explicit bundle alias
 
 ## Install locally in Pi
 ```bash
@@ -27,3 +28,4 @@ npm test
 - `/lore-models` edits one routing target at a time: choose default/agent, then model, then thinking, then save or back out.
 - `delegation_list` now returns readable per-run id/agent/status/summary/updatedAt lines, and `delegation_read` points to persisted raw/stderr files when a child response is malformed.
 - Child agents must return a single strict JSON envelope, including `skill_resolution`, so persisted runs remain machine-readable.
+- Child agents always receive Lore memory tools: `lore_search`, `lore_save`, `lore_get_observation`, `lore_context`, project tools, and skill tools. This does not grant `delegate`, `delegation_read`, or `delegation_list` to child runtimes.

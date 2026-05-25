@@ -14,6 +14,20 @@ export const DEFAULT_DELEGATIONS_ROOT = path.join(os.homedir(), ".local", "share
 export const DELEGATIONS_ROOT_ENV = "LORE_PI_RUNTIME_RUN_ROOT";
 export const PI_COMMAND_ENV = "LORE_PI_RUNTIME_PI_COMMAND";
 
+export const LORE_MEMORY_TOOL_BUNDLE = "lore:*";
+export const LORE_MEMORY_TOOLS = [
+  "lore_search",
+  "lore_save",
+  "lore_get_observation",
+  "lore_context",
+  "lore_project_list",
+  "lore_project_create",
+  "lore_project_get",
+  "lore_skill_save",
+  "lore_skill_list",
+  "lore_skill_get",
+] as const;
+
 export interface StartDelegationInput {
   registry: AgentRegistry;
   requestedAgent?: string;
@@ -85,9 +99,11 @@ export async function startDelegation(input: StartDelegationInput): Promise<Star
     requestedAgent: agentName,
     canonicalAgent: agent.name,
     runDir: record.runDir,
-    tools: [...(agent.tools ?? []), "contact_supervisor"],
+    tools: expandAgentTools([...(agent.tools ?? []), ...LORE_MEMORY_TOOLS, "contact_supervisor"]),
     extensionSources: discoverChildExtensions(),
     systemPrompt: buildChildSystemPrompt(agent),
+    systemPromptMode: agent.systemPromptMode,
+    inheritProjectContext: agent.inheritProjectContext,
     model: route.model,
     thinking: route.thinking,
     piCommand: process.env[PI_COMMAND_ENV] ?? undefined,
@@ -118,8 +134,8 @@ export function listDelegations(status?: string, limit?: number): ListedDelegati
 
   const entries = fs
     .readdirSync(rootDir, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory())
-    .map((entry) => recoverRun(path.join(rootDir, entry.name)))
+    .filter((entry) => entry.isDirectory() && isValidDelegationId(entry.name))
+    .map((entry) => recoverRun(resolveDelegationRunDir(rootDir, entry.name)))
     .filter((run) => !status || run.status?.status === status)
     .map((run) => ({
       id: run.record.id,
@@ -141,7 +157,38 @@ export function listDelegations(status?: string, limit?: number): ListedDelegati
 
 export function readDelegation(id: string): RecoveredRun {
   const rootDir = path.resolve(process.env[DELEGATIONS_ROOT_ENV] ?? DEFAULT_DELEGATIONS_ROOT);
-  return recoverRun(path.join(rootDir, id));
+  return recoverRun(resolveDelegationRunDir(rootDir, id));
+}
+
+function resolveDelegationRunDir(rootDir: string, delegationId: string): string {
+  if (!isValidDelegationId(delegationId)) {
+    throw new Error(`Invalid delegation id '${delegationId}'.`);
+  }
+
+  const resolvedRoot = path.resolve(rootDir);
+  const runDir = path.resolve(resolvedRoot, delegationId);
+  const relative = path.relative(resolvedRoot, runDir);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`Delegation id '${delegationId}' escapes the delegations root.`);
+  }
+
+  return runDir;
+}
+
+function isValidDelegationId(value: string): boolean {
+  return /^dg-[0-9a-f]{8}$/.test(value);
+}
+
+export function expandAgentTools(tools: string[]): string[] {
+  const expanded: string[] = [];
+  for (const tool of tools) {
+    if (tool === LORE_MEMORY_TOOL_BUNDLE) {
+      expanded.push(...LORE_MEMORY_TOOLS);
+      continue;
+    }
+    expanded.push(tool);
+  }
+  return expanded;
 }
 
 function resolveAgent(registry: AgentRegistry, requestedAgent: string): AgentDefinition {

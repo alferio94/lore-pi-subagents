@@ -291,6 +291,37 @@ test("delegate runs a child, then delegation_read and delegation_list recover th
   );
 });
 
+test("delegation_read rejects invalid delegation ids before path resolution", async () => {
+  const homeDir = makeTempDir();
+  const runRoot = path.join(homeDir, "runs");
+
+  await withEnv(
+    {
+      HOME: homeDir,
+      LORE_PI_RUNTIME_RUN_ROOT: runRoot,
+      LORE_PI_CHILD: undefined,
+      LORE_PI_RUN_DIR: undefined,
+    },
+    async () => {
+      const fake = makeFakePi();
+      runtimeExtension(fake.api as never);
+      const read = fake.tools.get(DELEGATION_READ_TOOL_NAME);
+      assert.ok(read);
+
+      const response = (await read.execute("tool-invalid-id", { id: "../escape" })) as {
+        content: Array<{ text: string }>;
+        details: { status: string; parseError: string };
+        isError?: boolean;
+      };
+
+      assert.equal(response.isError, true);
+      assert.equal(response.details.status, "failed");
+      assert.match(response.details.parseError, /invalid delegation id/i);
+      assert.match(response.content[0].text, /invalid delegation id/i);
+    },
+  );
+});
+
 test("delegate persists needs_user_input envelopes without widening child runtime tools", async () => {
   const homeDir = makeTempDir();
   const runRoot = path.join(homeDir, "runs");
@@ -467,6 +498,78 @@ test("delegate async notifies parse errors without exposing raw output", async (
       assert.match(notifications[0].message, new RegExp(`Background delegation ${delegated.details.id} \\(lore-worker\\) failed:`));
       assert.doesNotMatch(notifications[0].message, /SECRET_TOKEN_123/);
       assert.match(notifications[0].message, /single JSON object/i);
+    },
+  );
+});
+
+test("delegate grants lore memory tools to every child before launching", async () => {
+  const homeDir = makeTempDir();
+  const projectDir = makeTempDir();
+  const runRoot = path.join(homeDir, "runs");
+  const childArgsPath = path.join(homeDir, "child-args.json");
+  const fakePi = writeInspectableFakePi(homeDir, childArgsPath, {
+    status: "completed",
+    summary: "Child finished.",
+    artifacts: [],
+    next: null,
+    question: null,
+    options: [],
+    risks: [],
+    skill_resolution: "none",
+  });
+
+  const agentDir = path.join(projectDir, ".pi", "agents");
+  fs.mkdirSync(agentDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(agentDir, "memory-worker.md"),
+    `---\nname: memory-worker\ndescription: Memory-enabled worker\ntools:\n  - read\nsystemPromptMode: replace\ninheritProjectContext: true\n---\nUse Lore memory.\n`,
+    "utf8",
+  );
+
+  await withEnv(
+    {
+      HOME: homeDir,
+      LORE_PI_RUNTIME_RUN_ROOT: runRoot,
+      LORE_PI_RUNTIME_MODELS_PATH: path.join(homeDir, "models.json"),
+      LORE_PI_RUNTIME_PI_COMMAND: fakePi,
+      LORE_PI_CHILD: undefined,
+      LORE_PI_RUN_DIR: undefined,
+      LORE_PI_DELEGATION_DEPTH: undefined,
+    },
+    async () => {
+      const fake = makeFakePi();
+      runtimeExtension(fake.api as never);
+      const delegate = fake.tools.get(DELEGATE_TOOL_NAME);
+      assert.ok(delegate);
+
+      await delegate.execute("tool-lore-bundle", {
+        agent: "memory-worker",
+        task: "Use memory.",
+        cwd: projectDir,
+      });
+
+      const recorded = JSON.parse(fs.readFileSync(childArgsPath, "utf8")) as { args: string[] };
+      const toolsFlagIndex = recorded.args.indexOf("--tools");
+      assert.notEqual(toolsFlagIndex, -1);
+      const tools = recorded.args[toolsFlagIndex + 1].split(",");
+      assert.deepEqual(tools, [
+        "read",
+        "lore_search",
+        "lore_save",
+        "lore_get_observation",
+        "lore_context",
+        "lore_project_list",
+        "lore_project_create",
+        "lore_project_get",
+        "lore_skill_save",
+        "lore_skill_list",
+        "lore_skill_get",
+        "contact_supervisor",
+      ]);
+      assert.equal(tools.includes("lore:*"), false);
+      assert.equal(tools.includes("delegate"), false);
+      assert.equal(tools.includes("delegation_read"), false);
+      assert.equal(tools.includes("delegation_list"), false);
     },
   );
 });

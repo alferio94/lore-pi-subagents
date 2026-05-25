@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { discoverAgentRegistry, findNearestProjectRoot } from "../src/runtime/agent-registry.ts";
+import { discoverAgentRegistry, findNearestProjectRoot, parseAgentDefinition } from "../src/runtime/agent-registry.ts";
 
 function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "lore-pi-runtime-"));
@@ -16,6 +16,13 @@ function writeAgent(dir: string, name: string, description: string, body: string
     `---\nname: ${name}\ndescription: ${description}\nsystemPromptMode: replace\ninheritProjectContext: false\n---\n${body}\n`,
     "utf8",
   );
+}
+
+function writeRawAgent(dir: string, fileName: string, content: string): string {
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, fileName);
+  fs.writeFileSync(filePath, content, "utf8");
+  return filePath;
 }
 
 test("discoverAgentRegistry merges builtin, user, and project agents with project precedence", () => {
@@ -54,4 +61,32 @@ test("findNearestProjectRoot picks the closest ancestor with .pi/agents", () => 
   fs.mkdirSync(nested, { recursive: true });
 
   assert.equal(findNearestProjectRoot(nested), inner);
+});
+
+test("parseAgentDefinition rejects deprecated defaultContext frontmatter", () => {
+  const root = makeTempDir();
+  const filePath = writeRawAgent(
+    root,
+    "deprecated-agent.md",
+    `---\nname: lore-worker\ndescription: Deprecated agent\ndefaultContext: true\n---\nbody\n`,
+  );
+
+  assert.throws(
+    () => parseAgentDefinition(filePath, "project"),
+    /unsupported frontmatter field\(s\): defaultContext\./,
+  );
+});
+
+test("parseAgentDefinition rejects unsupported frontmatter fields", () => {
+  const root = makeTempDir();
+  const filePath = writeRawAgent(
+    root,
+    "unknown-agent.md",
+    `---\nname: lore-worker\ndescription: Unknown field agent\nlaunchContract: strict\ntyopField: value\n---\nbody\n`,
+  );
+
+  assert.throws(
+    () => parseAgentDefinition(filePath, "project"),
+    /unsupported frontmatter field\(s\): launchContract, tyopField\./,
+  );
 });

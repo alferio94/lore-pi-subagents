@@ -8,7 +8,6 @@ tools:
   - bash
 systemPromptMode: replace
 inheritProjectContext: true
-defaultContext: fork
 ---
 You are the canonical Lore repository worker.
 

@@ -8,6 +8,5 @@ tools:
   - bash
 systemPromptMode: replace
 inheritProjectContext: true
-defaultContext: fresh
 ---
 You execute the SDD spec phase. Write concrete requirements and acceptance scenarios that downstream phases can verify.

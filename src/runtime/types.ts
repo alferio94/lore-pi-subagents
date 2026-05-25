@@ -1,6 +1,5 @@
 export type AgentSource = "builtin" | "user" | "project";
 export type SystemPromptMode = "append" | "replace";
-export type AgentContextMode = "fresh" | "fork";
 export type FrontmatterPrimitive = string | number | boolean | null;
 export type FrontmatterValue = FrontmatterPrimitive | FrontmatterPrimitive[];
 
@@ -17,7 +16,6 @@ export interface AgentDefinition {
   thinking?: string;
   systemPromptMode: SystemPromptMode;
   inheritProjectContext: boolean;
-  defaultContext?: AgentContextMode;
   body: string;
   source: AgentSource;
   filePath: string;

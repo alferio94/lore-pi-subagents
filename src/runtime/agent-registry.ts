@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 import { PROJECT_AGENT_DIRNAME, USER_AGENT_DIR } from "./constants.ts";
 import { parseFrontmatter } from "./frontmatter.ts";
 import type {
-  AgentContextMode,
   AgentDefinition,
   AgentRegistry,
   AgentSource,
@@ -75,14 +74,16 @@ export function parseAgentDefinition(filePath: string, source: AgentSource): Age
   const description = asRequiredString(data.description, "description", filePath);
   const systemPromptMode = asSystemPromptMode(data.systemPromptMode);
   const inheritProjectContext = asBoolean(data.inheritProjectContext, false);
-  const defaultContext = asContextMode(data.defaultContext);
   const tools = asStringArray(data.tools);
   const model = asOptionalString(data.model);
   const thinking = asOptionalString(data.thinking);
 
-  const metadata = Object.fromEntries(
-    Object.entries(data).filter(([key]) => !KNOWN_AGENT_FIELDS.has(key)),
-  ) as Record<string, FrontmatterValue>;
+  const unsupportedFields = Object.keys(data).filter((key) => !KNOWN_AGENT_FIELDS.has(key));
+  if (unsupportedFields.length > 0) {
+    throw new Error(
+      `Agent '${filePath}' has unsupported frontmatter field(s): ${unsupportedFields.sort().join(", ")}.`,
+    );
+  }
 
   return {
     name,
@@ -92,11 +93,10 @@ export function parseAgentDefinition(filePath: string, source: AgentSource): Age
     ...(thinking ? { thinking } : {}),
     systemPromptMode,
     inheritProjectContext,
-    ...(defaultContext ? { defaultContext } : {}),
     body,
     source,
     filePath,
-    metadata,
+    metadata: {},
   };
 }
 
@@ -124,7 +124,6 @@ const KNOWN_AGENT_FIELDS = new Set([
   "thinking",
   "systemPromptMode",
   "inheritProjectContext",
-  "defaultContext",
 ]);
 
 function asRequiredString(value: FrontmatterValue | undefined, key: string, filePath: string): string {
@@ -160,9 +159,3 @@ function asSystemPromptMode(value: FrontmatterValue | undefined): SystemPromptMo
   return "replace";
 }
 
-function asContextMode(value: FrontmatterValue | undefined): AgentContextMode | undefined {
-  if (value === "fresh" || value === "fork") {
-    return value;
-  }
-  return undefined;
-}

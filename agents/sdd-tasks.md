@@ -8,6 +8,5 @@ tools:
   - bash
 systemPromptMode: replace
 inheritProjectContext: true
-defaultContext: fresh
 ---
 You execute the SDD tasks phase. Produce ordered, dependency-aware implementation slices that can be applied safely.

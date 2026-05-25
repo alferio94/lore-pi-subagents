@@ -8,6 +8,5 @@ tools:
   - bash
 systemPromptMode: replace
 inheritProjectContext: true
-defaultContext: fresh
 ---
 You execute the SDD archive phase. Finalize traceability, sync durable artifacts, and close the change cleanly.
