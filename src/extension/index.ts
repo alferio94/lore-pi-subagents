@@ -9,7 +9,13 @@ import {
   CHILD_REQUESTED_AGENT_ENV,
 } from "../runtime/child-launch.ts";
 import { discoverAgentRegistry } from "../runtime/agent-registry.ts";
-import { formatBackgroundNotification, startDelegation, listDelegations, readDelegation } from "../runtime/delegations.ts";
+import {
+  formatBackgroundNotification,
+  startDelegation,
+  listDelegations,
+  readDelegation,
+  type BackgroundDelegationEvent,
+} from "../runtime/delegations.ts";
 import { readModelRoutingConfig, writeModelRoutingConfig } from "../runtime/model-routing.ts";
 import { openLoreModelsUI } from "../ui/lore-models.ts";
 
@@ -30,6 +36,10 @@ interface ToolExecuteContext {
   ui?: {
     notify?: (message: string, level?: "info" | "warning" | "error") => void;
   };
+}
+
+interface SendMessageCapablePi {
+  sendMessage?: (message: { customType: string; display: boolean; content: string; details?: Record<string, unknown> }, options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" }) => void;
 }
 
 const DELEGATE_PARAMETERS = {
@@ -98,6 +108,7 @@ export default function lorePiRuntime(pi: ExtensionAPI): void {
               ? (event) => {
                   const level = event.status === "completed" ? "info" : event.status === "needs_user_input" ? "warning" : "error";
                   ctx?.ui?.notify?.(formatBackgroundNotification(event), level);
+                  sendBackgroundCompletionMessage(pi, event);
                 }
               : undefined,
           });
@@ -335,6 +346,60 @@ function formatDelegationReadText(run: ReturnType<typeof readDelegation>): strin
   }
   if (run.result?.parseError) {
     lines.push(`parseError: ${run.result.parseError}`);
+  }
+
+  return lines.join("\n");
+}
+
+function sendBackgroundCompletionMessage(pi: ExtensionAPI, event: BackgroundDelegationEvent): void {
+  const sender = pi as unknown as SendMessageCapablePi;
+  if (typeof sender.sendMessage !== "function") return;
+
+  sender.sendMessage({
+    customType: "delegation-notification",
+    display: true,
+    content: formatBackgroundCompletionContent(event),
+    details: {
+      id: event.delegationId,
+      status: event.status,
+      agent: event.agent,
+      runDir: event.runDir,
+      envelope: event.envelope ?? null,
+      parseError: event.parseError ?? null,
+    },
+  }, { triggerTurn: true, deliverAs: "followUp" });
+}
+
+function formatBackgroundCompletionContent(event: BackgroundDelegationEvent): string {
+  const envelopeBlock = event.envelope
+    ? formatEnvelopeBlock(event.envelope)
+    : `Preview: ${event.parseError ?? "(no output preview)"}\nStructured envelope: missing or invalid`;
+
+  return [
+    `Delegation ${event.status}: ${event.delegationId}`,
+    `Agent: ${event.agent}`,
+    envelopeBlock,
+    `Use delegation_read({"id":"${event.delegationId}"}) to view the full result.`,
+    "",
+    "Assistant action: acknowledge this completion and provide a brief summary only. Prefer the structured envelope above over raw output. Do not launch follow-up work unless the user explicitly requested automatic continuation or the active workflow state says execution mode auto.",
+  ].join("\n");
+}
+
+function formatEnvelopeBlock(envelope: NonNullable<BackgroundDelegationEvent["envelope"]>): string {
+  const lines = [
+    `Envelope status: ${envelope.status}`,
+    `Summary: ${envelope.summary}`,
+    `Artifacts: ${envelope.artifacts.length > 0 ? envelope.artifacts.join("; ") : "(none)"}`,
+    `Risks: ${envelope.risks.length > 0 ? envelope.risks.join("; ") : "(none)"}`,
+    `Next step: ${envelope.next || "(none)"}`,
+    `Skill resolution: ${envelope.skill_resolution}`,
+  ];
+
+  if ("phase" in envelope) {
+    lines.splice(1, 0, `Phase: ${envelope.phase}`);
+  } else if (envelope.status === "needs_user_input") {
+    lines.push(`Question: ${envelope.question ?? "(none)"}`);
+    lines.push(`Options: ${envelope.options.length > 0 ? envelope.options.join("; ") : "(none)"}`);
   }
 
   return lines.join("\n");

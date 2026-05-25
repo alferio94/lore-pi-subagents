@@ -7,6 +7,7 @@ import type { AgentDefinition, AgentRegistry } from "./types.ts";
 import { isSddAgent, readModelRoutingConfig, resolveModelRoute } from "./model-routing.ts";
 import { launchChildProcess } from "./child-launch.ts";
 import { createRunRecord, recoverRun, storeRunOutput, type RecoveredRun, type RunRecord } from "./result-store.ts";
+import type { DelegationEnvelope } from "./envelopes.ts";
 
 export const LORE_MEMORY_EXTENSION_PATH = path.join(os.homedir(), ".pi", "agent", "extensions", "lore-memory.ts");
 export const DEFAULT_DELEGATIONS_ROOT = path.join(os.homedir(), ".local", "share", "lore", "pi", "delegations");
@@ -46,6 +47,8 @@ export interface BackgroundDelegationEvent {
   status: RunRecord["status"];
   summary?: string;
   parseError?: string;
+  envelope?: DelegationEnvelope;
+  runDir: string;
 }
 
 const activeBackgroundRuns = new Map<string, Promise<void>>();
@@ -203,6 +206,8 @@ async function finalizeChildRun(
     status: result.status,
     summary: result.envelope?.summary,
     parseError: result.parseError,
+    envelope: result.envelope,
+    runDir: record.runDir,
   });
 }
 
