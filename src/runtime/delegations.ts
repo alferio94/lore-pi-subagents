@@ -72,7 +72,7 @@ export async function startDelegation(input: StartDelegationInput): Promise<Star
     runDir: record.runDir,
     tools: [...(agent.tools ?? []), "contact_supervisor"],
     extensionSources: discoverChildExtensions(),
-    systemPrompt: agent.body,
+    systemPrompt: buildChildSystemPrompt(agent),
     model: route.model,
     thinking: route.thinking,
     piCommand: process.env[PI_COMMAND_ENV] ?? undefined,
@@ -141,6 +141,17 @@ function normalizeRequestedAgent(requestedAgent: string | undefined): string {
 
 function createDelegationId(): string {
   return `dg-${randomUUID().split("-")[0]}`;
+}
+
+function buildChildSystemPrompt(agent: AgentDefinition): string {
+  const base = agent.body.trim();
+  const envelope = isSddAgent(agent.name)
+    ? `Return ONLY one JSON object with exactly these keys: status, phase, summary, artifacts, next, question, options, risks, skill_resolution. phase must match the SDD phase. status must be one of: completed, running, needs_user_input, failed. skill_resolution must be one of: injected, fallback-registry, fallback-path, none. artifacts/options/risks must be string arrays. next/question must be string or null.`
+    : `Return ONLY one JSON object with exactly these keys: status, summary, artifacts, next, question, options, risks, skill_resolution. Do not include prose, markdown fences, or extra keys. status must be one of: completed, running, needs_user_input, failed. skill_resolution must be one of: injected, fallback-registry, fallback-path, none. artifacts/options/risks must be string arrays. next/question must be string or null.`;
+  const example = isSddAgent(agent.name)
+    ? `Example shape: {"status":"completed","phase":"apply","summary":"...","artifacts":[],"next":null,"question":null,"options":[],"risks":[],"skill_resolution":"none"}`
+    : `Example shape: {"status":"completed","summary":"...","artifacts":[],"next":null,"question":null,"options":[],"risks":[],"skill_resolution":"none"}`;
+  return [base, "", "## Required final response contract", envelope, example].filter(Boolean).join("\n");
 }
 
 function discoverChildExtensions(): string[] {
