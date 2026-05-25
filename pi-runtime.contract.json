@@ -1,0 +1,184 @@
+{
+  "version": 1,
+  "sourceLocator": {
+    "kind": "pi-settings-package",
+    "value": "git:github.com/alferio94/lore-pi-subagents"
+  },
+  "packageIdentity": {
+    "name": "lore-pi-runtime",
+    "extensionName": "lore-pi-runtime"
+  },
+  "entrypoint": {
+    "path": "./src/extension/index.ts",
+    "source": "package.json#pi.extensions"
+  },
+  "installPolicy": {
+    "mergeSettingsPackagesFirst": true,
+    "retainedExtensions": ["lore-memory.ts", "lore-footer.ts"],
+    "blockedLegacyExtensions": ["lore-delegation.ts"],
+    "managedExtensionsBookkeepingOnly": true,
+    "conflictPolicy": "non-destructive-warn"
+  },
+  "builtinCatalog": {
+    "aliases": [
+      { "alias": "reviewer", "target": "lore-worker" },
+      { "alias": "researcher", "target": "lore-worker" },
+      { "alias": "scribe", "target": "lore-worker" },
+      { "alias": "general", "target": "lore-worker" }
+    ],
+    "agents": [
+      {
+        "name": "lore-worker",
+        "role": "worker",
+        "requiredEnvelope": "worker",
+        "promptFile": "agents/lore-worker.md",
+        "skillPolicy": {
+          "mode": "registry"
+        }
+      },
+      {
+        "name": "sdd-init",
+        "role": "sdd",
+        "phase": "init",
+        "requiredEnvelope": "sdd",
+        "promptFile": "agents/sdd-init.md",
+        "skillPolicy": {
+          "mode": "explicit",
+          "files": [
+            "~/.pi/agent/skills/sdd-init/SKILL.md",
+            "~/.pi/agent/skills/_shared/sdd-phase-common.md"
+          ]
+        }
+      },
+      {
+        "name": "sdd-explore",
+        "role": "sdd",
+        "phase": "explore",
+        "requiredEnvelope": "sdd",
+        "promptFile": "agents/sdd-explore.md",
+        "skillPolicy": {
+          "mode": "explicit",
+          "files": [
+            "~/.pi/agent/skills/sdd-explore/SKILL.md",
+            "~/.pi/agent/skills/_shared/sdd-phase-common.md"
+          ]
+        }
+      },
+      {
+        "name": "sdd-propose",
+        "role": "sdd",
+        "phase": "propose",
+        "requiredEnvelope": "sdd",
+        "promptFile": "agents/sdd-propose.md",
+        "skillPolicy": {
+          "mode": "explicit",
+          "files": [
+            "~/.pi/agent/skills/sdd-propose/SKILL.md",
+            "~/.pi/agent/skills/_shared/sdd-phase-common.md"
+          ]
+        }
+      },
+      {
+        "name": "sdd-spec",
+        "role": "sdd",
+        "phase": "spec",
+        "requiredEnvelope": "sdd",
+        "promptFile": "agents/sdd-spec.md",
+        "skillPolicy": {
+          "mode": "explicit",
+          "files": [
+            "~/.pi/agent/skills/sdd-spec/SKILL.md",
+            "~/.pi/agent/skills/_shared/sdd-phase-common.md"
+          ]
+        }
+      },
+      {
+        "name": "sdd-design",
+        "role": "sdd",
+        "phase": "design",
+        "requiredEnvelope": "sdd",
+        "promptFile": "agents/sdd-design.md",
+        "skillPolicy": {
+          "mode": "explicit",
+          "files": [
+            "~/.pi/agent/skills/sdd-design/SKILL.md",
+            "~/.pi/agent/skills/_shared/sdd-phase-common.md"
+          ]
+        }
+      },
+      {
+        "name": "sdd-tasks",
+        "role": "sdd",
+        "phase": "tasks",
+        "requiredEnvelope": "sdd",
+        "promptFile": "agents/sdd-tasks.md",
+        "skillPolicy": {
+          "mode": "explicit",
+          "files": [
+            "~/.pi/agent/skills/sdd-tasks/SKILL.md",
+            "~/.pi/agent/skills/_shared/sdd-phase-common.md"
+          ]
+        }
+      },
+      {
+        "name": "sdd-apply",
+        "role": "sdd",
+        "phase": "apply",
+        "requiredEnvelope": "sdd",
+        "promptFile": "agents/sdd-apply.md",
+        "skillPolicy": {
+          "mode": "explicit",
+          "files": [
+            "~/.pi/agent/skills/sdd-apply/SKILL.md",
+            "~/.pi/agent/skills/_shared/sdd-phase-common.md"
+          ]
+        }
+      },
+      {
+        "name": "sdd-verify",
+        "role": "sdd",
+        "phase": "verify",
+        "requiredEnvelope": "sdd",
+        "promptFile": "agents/sdd-verify.md",
+        "skillPolicy": {
+          "mode": "explicit",
+          "files": [
+            "~/.pi/agent/skills/sdd-verify/SKILL.md",
+            "~/.pi/agent/skills/_shared/sdd-phase-common.md"
+          ]
+        }
+      },
+      {
+        "name": "sdd-archive",
+        "role": "sdd",
+        "phase": "archive",
+        "requiredEnvelope": "sdd",
+        "promptFile": "agents/sdd-archive.md",
+        "skillPolicy": {
+          "mode": "explicit",
+          "files": [
+            "~/.pi/agent/skills/sdd-archive/SKILL.md",
+            "~/.pi/agent/skills/_shared/sdd-phase-common.md"
+          ]
+        }
+      }
+    ]
+  },
+  "runtimeInvariants": {
+    "projectOverridesBuiltinPrompts": true,
+    "strictEnvelopes": {
+      "requireSkillResolution": true
+    },
+    "continuation": {
+      "needsUserInputMirrorsQuestionOptions": true,
+      "backgroundFollowUp": {
+        "triggerTurn": true,
+        "deliverAs": "followUp"
+      }
+    },
+    "toolBoundaries": {
+      "parentOnly": ["delegate", "delegation_read", "delegation_list"],
+      "childOnly": ["contact_supervisor"]
+    }
+  }
+}

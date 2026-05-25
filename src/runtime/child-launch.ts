@@ -49,8 +49,8 @@ export interface LaunchedChild {
 
 export async function prepareChildLaunch(input: PrepareChildLaunchInput): Promise<PreparedChildLaunch> {
   const maxDepth = input.maxDepth ?? DEFAULT_MAX_DELEGATION_DEPTH;
-  const parentEnv = { ...process.env, ...input.env };
-  const nextDepth = parseDepth(parentEnv[CHILD_DEPTH_ENV]) + 1;
+  const parentEnv = stripChildRuntimeEnv({ ...process.env, ...input.env });
+  const nextDepth = parseDepth(process.env[CHILD_DEPTH_ENV]) + 1;
   if (nextDepth > maxDepth) {
     throw new Error(`Delegation depth ${nextDepth} exceeds max depth ${maxDepth}.`);
   }
@@ -151,6 +151,17 @@ function normalizeList(items: string[] | undefined, transform?: (value: string) 
   }
 
   return normalized;
+}
+
+function stripChildRuntimeEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const sanitized = { ...env };
+  delete sanitized[CHILD_MARKER_ENV];
+  delete sanitized[CHILD_DEPTH_ENV];
+  delete sanitized[CHILD_RUN_DIR_ENV];
+  delete sanitized[CHILD_DELEGATION_ID_ENV];
+  delete sanitized[CHILD_REQUESTED_AGENT_ENV];
+  delete sanitized[CHILD_CANONICAL_AGENT_ENV];
+  return sanitized;
 }
 
 function parseDepth(rawDepth: string | undefined): number {

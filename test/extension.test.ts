@@ -11,6 +11,7 @@ import runtimeExtension, {
   EXTENSION_NAME,
   LORE_MODELS_COMMAND,
 } from "../src/extension/index.ts";
+import { getRuntimeInvariants } from "../src/runtime/contract.ts";
 
 async function withEnv<T>(patch: Record<string, string | undefined>, run: () => Promise<T> | T): Promise<T> {
   const previous = new Map<string, string | undefined>();
@@ -43,15 +44,23 @@ function makeTempDir(): string {
 function makeFakePi() {
   const tools = new Map<string, { name: string; execute: (...args: unknown[]) => Promise<unknown> }>();
   const commands: Array<{ name: string; definition: { handler?: (args: string, ctx: unknown) => Promise<void> } }> = [];
+  const sentMessages: Array<{
+    message: { customType: string; display: boolean; content: string; details?: Record<string, unknown> };
+    options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" };
+  }> = [];
   return {
     tools,
     commands,
+    sentMessages,
     api: {
       registerTool(definition: { name: string; execute: (...args: unknown[]) => Promise<unknown> }) {
         tools.set(definition.name, definition);
       },
       registerCommand(name: string, definition: { handler?: (args: string, ctx: unknown) => Promise<void> }) {
         commands.push({ name, definition });
+      },
+      sendMessage(message: { customType: string; display: boolean; content: string; details?: Record<string, unknown> }, options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" }) {
+        sentMessages.push({ message, options });
       },
     },
   };
@@ -218,6 +227,41 @@ test("contact_supervisor persists a child-only supervisor request envelope", asy
       assert.equal(saved.message, "Two approaches remain viable.");
       assert.equal(saved.question, "Which one should continue?");
       assert.deepEqual(saved.options, ["A", "B"]);
+    },
+  );
+});
+
+test("contact_supervisor persists null question and empty options when omitted", async () => {
+  const runDir = makeTempDir();
+
+  await withEnv(
+    {
+      LORE_PI_CHILD: "1",
+      LORE_PI_RUN_DIR: runDir,
+      LORE_PI_DELEGATION_ID: "dg-654",
+      LORE_PI_REQUESTED_AGENT: "sdd-apply",
+      LORE_PI_CANONICAL_AGENT: "sdd-apply",
+    },
+    async () => {
+      const fake = makeFakePi();
+      runtimeExtension(fake.api as never);
+
+      const tool = fake.tools.get(CONTACT_SUPERVISOR_TOOL_NAME);
+      assert.ok(tool);
+
+      const response = (await tool.execute("tool-supervisor-defaults", {
+        reason: "Need a supervisor checkpoint",
+        message: "Waiting on a parent decision.",
+      })) as { details: { persisted: boolean; requestPath: string } };
+
+      const saved = JSON.parse(fs.readFileSync(response.details.requestPath, "utf8")) as {
+        question: string | null;
+        options: string[];
+      };
+
+      assert.equal(response.details.persisted, true);
+      assert.equal(saved.question, null);
+      assert.deepEqual(saved.options, []);
     },
   );
 });
@@ -412,13 +456,14 @@ test("delegate async notifies the parent UI when a background child completes", 
   );
 });
 
-test("delegate async notifies needs_user_input as a warning", async () => {
+test("delegate async notifies needs_user_input as a warning and preserves SDD decision text in follow-up content", async () => {
   const homeDir = makeTempDir();
   const runRoot = path.join(homeDir, "runs");
   const fakePi = writeFakePi(homeDir, {
     status: "needs_user_input",
+    phase: "apply",
     summary: "Approval needed.",
-    artifacts: [],
+    artifacts: ["sdd/change/apply-report"],
     next: null,
     question: "Ship it?",
     options: ["yes", "no"],
@@ -451,9 +496,28 @@ test("delegate async notifies needs_user_input as a warning", async () => {
         { ui: { notify(message: string, level?: string) { notifications.push({ message, level }); } } },
       )) as { details: { id: string } };
 
-      await waitFor(() => notifications.length === 1);
+      await waitFor(() => notifications.length === 1 && fake.sentMessages.length === 1);
+      const continuation = getRuntimeInvariants();
       assert.equal(notifications[0].level, "warning");
       assert.match(notifications[0].message, new RegExp(`Background delegation ${delegated.details.id} \\(sdd-apply\\) needs_user_input: Approval needed\\.`));
+      assert.equal(fake.sentMessages[0].options?.triggerTurn, continuation.continuation.backgroundFollowUp.triggerTurn);
+      assert.equal(fake.sentMessages[0].options?.deliverAs, continuation.continuation.backgroundFollowUp.deliverAs);
+      assert.equal(fake.sentMessages[0].message.customType, "delegation-notification");
+      assert.equal(fake.sentMessages[0].message.details?.status, "needs_user_input");
+      assert.deepEqual(fake.sentMessages[0].message.details?.envelope, {
+        status: "needs_user_input",
+        phase: "apply",
+        summary: "Approval needed.",
+        artifacts: ["sdd/change/apply-report"],
+        next: null,
+        question: "Ship it?",
+        options: ["yes", "no"],
+        risks: [],
+        skill_resolution: "none",
+      });
+      assert.match(fake.sentMessages[0].message.content, /Phase: apply/);
+      assert.match(fake.sentMessages[0].message.content, /Question: Ship it\?/);
+      assert.match(fake.sentMessages[0].message.content, /Options: yes; no/);
     },
   );
 });

@@ -12,6 +12,7 @@
   "files": [
     "src/**/*.ts",
     "agents/**/*.md",
+    "pi-runtime.contract.json",
     "README.md"
   ],
   "scripts": {
@@ -21,7 +22,8 @@
   "pi": {
     "extensions": [
       "./src/extension/index.ts"
-    ]
+    ],
+    "runtimeContract": "./pi-runtime.contract.json"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*"

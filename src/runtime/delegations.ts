@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { getInstallPolicy, getRuntimeInvariants, resolveBuiltinAgentName } from "./contract.ts";
 import type { AgentDefinition, AgentRegistry } from "./types.ts";
 import { isSddAgent, readModelRoutingConfig, resolveModelRoute } from "./model-routing.ts";
 import { launchChildProcess } from "./child-launch.ts";
@@ -65,6 +66,15 @@ export interface BackgroundDelegationEvent {
   runDir: string;
 }
 
+export interface DelegationRuntimePolicy {
+  aliases: ReadonlyMap<string, string>;
+  retainedExtensions: string[];
+  blockedLegacyExtensions: string[];
+  conflictPolicy: string;
+  parentOnlyTools: string[];
+  childOnlyTools: string[];
+}
+
 const activeBackgroundRuns = new Map<string, Promise<void>>();
 
 export async function startDelegation(input: StartDelegationInput): Promise<StartedDelegation> {
@@ -92,6 +102,9 @@ export async function startDelegation(input: StartDelegationInput): Promise<Star
     modelRef: route.model,
   });
 
+  const childPolicy = getDelegationRuntimePolicy();
+  const childTools = expandAgentTools([...(agent.tools ?? []), ...LORE_MEMORY_TOOLS, ...childPolicy.childOnlyTools]);
+
   const launch = await launchChildProcess({
     cwd,
     prompt: input.task,
@@ -99,7 +112,7 @@ export async function startDelegation(input: StartDelegationInput): Promise<Star
     requestedAgent: agentName,
     canonicalAgent: agent.name,
     runDir: record.runDir,
-    tools: expandAgentTools([...(agent.tools ?? []), ...LORE_MEMORY_TOOLS, "contact_supervisor"]),
+    tools: childTools,
     extensionSources: discoverChildExtensions(),
     systemPrompt: buildChildSystemPrompt(agent),
     systemPromptMode: agent.systemPromptMode,
@@ -160,6 +173,24 @@ export function readDelegation(id: string): RecoveredRun {
   return recoverRun(resolveDelegationRunDir(rootDir, id));
 }
 
+export function getDelegationRuntimePolicy(): DelegationRuntimePolicy {
+  const installPolicy = getInstallPolicy();
+  const runtimeInvariants = getRuntimeInvariants();
+  const aliases = new Map<string, string>();
+  for (const alias of ["reviewer", "researcher", "scribe", "general"]) {
+    aliases.set(alias, resolveBuiltinAgentName(alias));
+  }
+
+  return {
+    aliases,
+    retainedExtensions: [...installPolicy.retainedExtensions],
+    blockedLegacyExtensions: [...installPolicy.blockedLegacyExtensions],
+    conflictPolicy: installPolicy.conflictPolicy,
+    parentOnlyTools: [...runtimeInvariants.toolBoundaries.parentOnly],
+    childOnlyTools: [...runtimeInvariants.toolBoundaries.childOnly],
+  };
+}
+
 function resolveDelegationRunDir(rootDir: string, delegationId: string): string {
   if (!isValidDelegationId(delegationId)) {
     throw new Error(`Invalid delegation id '${delegationId}'.`);
@@ -180,19 +211,37 @@ function isValidDelegationId(value: string): boolean {
 }
 
 export function expandAgentTools(tools: string[]): string[] {
+  const policy = getDelegationRuntimePolicy();
+  const parentOnly = new Set(policy.parentOnlyTools);
+  const childOnly = new Set(policy.childOnlyTools);
   const expanded: string[] = [];
+  const seen = new Set<string>();
+
   for (const tool of tools) {
-    if (tool === LORE_MEMORY_TOOL_BUNDLE) {
-      expanded.push(...LORE_MEMORY_TOOLS);
-      continue;
+    const candidateTools = tool === LORE_MEMORY_TOOL_BUNDLE ? [...LORE_MEMORY_TOOLS] : [tool];
+    for (const candidate of candidateTools) {
+      if (parentOnly.has(candidate)) {
+        continue;
+      }
+      if (!seen.has(candidate)) {
+        expanded.push(candidate);
+        seen.add(candidate);
+      }
     }
-    expanded.push(tool);
   }
+
+  for (const tool of childOnly) {
+    if (!seen.has(tool)) {
+      expanded.push(tool);
+      seen.add(tool);
+    }
+  }
+
   return expanded;
 }
 
 function resolveAgent(registry: AgentRegistry, requestedAgent: string): AgentDefinition {
-  const alias = AGENT_ALIASES[requestedAgent] ?? requestedAgent;
+  const alias = resolveBuiltinAgentName(requestedAgent);
   const agent = registry.byName.get(alias);
   if (agent) return agent;
   throw new Error(`Unknown Lore agent '${requestedAgent}'.`);
@@ -208,11 +257,12 @@ function createDelegationId(): string {
 
 function buildChildSystemPrompt(agent: AgentDefinition): string {
   const base = agent.body.trim();
-  const envelope = isSddAgent(agent.name)
+  const isSdd = agent.requiredEnvelope === "sdd" || (agent.phase !== undefined) || isSddAgent(agent.name);
+  const envelope = isSdd
     ? `Return ONLY one JSON object with exactly these keys: status, phase, summary, artifacts, next, question, options, risks, skill_resolution. phase must match the SDD phase. status must be one of: completed, running, needs_user_input, failed. skill_resolution must be one of: injected, fallback-registry, fallback-path, none. artifacts/options/risks must be string arrays. next/question must be string or null.`
     : `Return ONLY one JSON object with exactly these keys: status, summary, artifacts, next, question, options, risks, skill_resolution. Do not include prose, markdown fences, or extra keys. status must be one of: completed, running, needs_user_input, failed. skill_resolution must be one of: injected, fallback-registry, fallback-path, none. artifacts/options/risks must be string arrays. next/question must be string or null.`;
-  const example = isSddAgent(agent.name)
-    ? `Example shape: {"status":"completed","phase":"apply","summary":"...","artifacts":[],"next":null,"question":null,"options":[],"risks":[],"skill_resolution":"none"}`
+  const example = isSdd
+    ? `Example shape: {"status":"completed","phase":"${agent.phase ?? "apply"}","summary":"...","artifacts":[],"next":null,"question":null,"options":[],"risks":[],"skill_resolution":"none"}`
     : `Example shape: {"status":"completed","summary":"...","artifacts":[],"next":null,"question":null,"options":[],"risks":[],"skill_resolution":"none"}`;
   return [base, "", "## Required final response contract", envelope, example].filter(Boolean).join("\n");
 }
@@ -281,10 +331,3 @@ async function readStream(stream: NodeJS.ReadableStream): Promise<string> {
   }
   return output;
 }
-
-const AGENT_ALIASES: Record<string, string> = {
-  reviewer: "lore-worker",
-  researcher: "lore-worker",
-  scribe: "lore-worker",
-  general: "lore-worker",
-};

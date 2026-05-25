@@ -77,17 +77,49 @@ test("prepareChildLaunch enforces depth=1, can disable project context, and dedu
 test("prepareChildLaunch rejects nested delegation beyond max depth", async () => {
   await assert.rejects(
     () =>
-      withCleanChildEnv(() => prepareChildLaunch({
-        cwd: makeTempDir(),
-        prompt: "Task: recurse",
-        delegationId: "dg-nested",
-        requestedAgent: "lore-worker",
-        canonicalAgent: "lore-worker",
-        runDir: makeTempDir(),
-        env: { [CHILD_DEPTH_ENV]: "1" },
-      })),
+      withCleanChildEnv(() => {
+        process.env[CHILD_DEPTH_ENV] = "1";
+        return prepareChildLaunch({
+          cwd: makeTempDir(),
+          prompt: "Task: recurse",
+          delegationId: "dg-nested",
+          requestedAgent: "lore-worker",
+          canonicalAgent: "lore-worker",
+          runDir: makeTempDir(),
+        });
+      }),
     /exceeds max depth/i,
   );
+});
+
+test("prepareChildLaunch preserves delegation identity over conflicting env overrides", async () => {
+  const root = makeTempDir();
+
+  const prepared = await withCleanChildEnv(() => prepareChildLaunch({
+    cwd: root,
+    prompt: "Task: inspect repo",
+    delegationId: "dg-identity",
+    requestedAgent: "reviewer",
+    canonicalAgent: "lore-worker",
+    runDir: path.join(root, "runs", "dg-identity"),
+    env: {
+      [CHILD_MARKER_ENV]: "0",
+      [CHILD_DEPTH_ENV]: "999",
+      [CHILD_RUN_DIR_ENV]: "/tmp/override-run-dir",
+      [CHILD_DELEGATION_ID_ENV]: "dg-override",
+      [CHILD_REQUESTED_AGENT_ENV]: "override-requested",
+      [CHILD_CANONICAL_AGENT_ENV]: "override-canonical",
+    },
+  }));
+
+  assert.equal(prepared.env[CHILD_MARKER_ENV], "1");
+  assert.equal(prepared.env[CHILD_DEPTH_ENV], "1");
+  assert.equal(prepared.env[CHILD_RUN_DIR_ENV], path.resolve(root, "runs", "dg-identity"));
+  assert.equal(prepared.env[CHILD_DELEGATION_ID_ENV], "dg-identity");
+  assert.equal(prepared.env[CHILD_REQUESTED_AGENT_ENV], "reviewer");
+  assert.equal(prepared.env[CHILD_CANONICAL_AGENT_ENV], "lore-worker");
+
+  await prepared.cleanup();
 });
 
 test("launchChildProcess passes constrained args/env to the child and cleans temp prompt files", async () => {

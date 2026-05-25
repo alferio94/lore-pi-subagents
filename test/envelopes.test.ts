@@ -110,6 +110,24 @@ test("validateSddEnvelope requires question and options for needs_user_input", (
   }
 });
 
+test("validateWorkerEnvelope also requires question and options for needs_user_input", () => {
+  const result = validateWorkerEnvelope({
+    status: "needs_user_input",
+    summary: "Need help.",
+    artifacts: [],
+    next: null,
+    question: "",
+    options: [],
+    risks: [],
+    skill_resolution: "fallback-path",
+  });
+
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.match(result.error, /question/i);
+  }
+});
+
 test("validateSddEnvelope rejects unsupported keys for strict contracts", () => {
   const result = validateSddEnvelope({
     status: "completed",

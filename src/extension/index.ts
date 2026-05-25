@@ -397,7 +397,9 @@ function formatEnvelopeBlock(envelope: NonNullable<BackgroundDelegationEvent["en
 
   if ("phase" in envelope) {
     lines.splice(1, 0, `Phase: ${envelope.phase}`);
-  } else if (envelope.status === "needs_user_input") {
+  }
+
+  if (envelope.status === "needs_user_input") {
     lines.push(`Question: ${envelope.question ?? "(none)"}`);
     lines.push(`Options: ${envelope.options.length > 0 ? envelope.options.join("; ") : "(none)"}`);
   }
