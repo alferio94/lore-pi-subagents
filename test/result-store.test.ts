@@ -132,11 +132,14 @@ test("storeRunOutput preserves malformed raw output for recovery", () => {
     cwd: "/repo",
   });
 
-  const result = storeRunOutput(record, "not valid json");
+  const result = storeRunOutput(record, "not valid json", "stderr boom");
   assert.equal(result.status, "failed");
   assert.match(result.parseError ?? "", /single JSON object/i);
+  assert.match(result.rawOutputPath ?? "", /raw-output\.txt$/);
+  assert.match(result.stderrPath ?? "", /stderr\.txt$/);
 
   const recovered = recoverRun(record.runDir);
   assert.equal(recovered.status?.status, "failed");
   assert.equal(recovered.rawOutput, "not valid json");
+  assert.equal(recovered.stderr, "stderr boom");
 });

@@ -28,6 +28,7 @@ export interface StartedDelegation {
 
 export interface ListedDelegation {
   id: string;
+  agent: string;
   status: string;
   requestedAgent: string;
   canonicalAgent: string;
@@ -108,6 +109,7 @@ export function listDelegations(status?: string, limit?: number): ListedDelegati
     .filter((run) => !status || run.status?.status === status)
     .map((run) => ({
       id: run.record.id,
+      agent: formatListedAgent(run.record.requestedAgent, run.record.canonicalAgent),
       status: run.status?.status ?? run.record.status,
       requestedAgent: run.record.requestedAgent,
       canonicalAgent: run.record.canonicalAgent,
@@ -180,7 +182,11 @@ async function finalizeChildRun(
     risks: stderrText.trim() ? [stderrText.trim()] : [],
     skill_resolution: "none",
   });
-  storeRunOutput(record, rawOutput);
+  storeRunOutput(record, rawOutput, stderrText);
+}
+
+function formatListedAgent(requestedAgent: string, canonicalAgent: string): string {
+  return requestedAgent === canonicalAgent ? canonicalAgent : `${requestedAgent} -> ${canonicalAgent}`;
 }
 
 async function readStream(stream: NodeJS.ReadableStream): Promise<string> {

@@ -131,7 +131,7 @@ export default function lorePiRuntime(pi: ExtensionAPI): void {
         try {
           const run = readDelegation(String(params.id));
           return {
-            content: [{ type: "text", text: `${run.record.id}: ${run.status?.summary ?? run.status?.status ?? run.record.status}` }],
+            content: [{ type: "text", text: formatDelegationReadText(run) }],
             details: {
               id: run.record.id,
               status: run.status?.status ?? run.record.status,
@@ -140,7 +140,17 @@ export default function lorePiRuntime(pi: ExtensionAPI): void {
               runDir: run.record.runDir,
               envelope: run.result?.envelope ?? null,
               parseError: run.result?.parseError ?? null,
-              rawOutput: run.rawOutput,
+              rawOutputPath: run.result?.rawOutputPath ?? run.record.files.rawOutput,
+              stderrPath: run.result?.stderrPath ?? (run.stderr ? run.record.files.stderr : null),
+              rawOutputPreview: previewText(run.rawOutput),
+              stderrPreview: previewText(run.stderr),
+              references: {
+                recordPath: run.record.files.record,
+                statusPath: run.record.files.status,
+                resultPath: run.record.files.result,
+                rawOutputPath: run.result?.rawOutputPath ?? run.record.files.rawOutput,
+                stderrPath: run.result?.stderrPath ?? (run.stderr ? run.record.files.stderr : null),
+              },
             },
           };
         } catch (error) {
@@ -154,7 +164,17 @@ export default function lorePiRuntime(pi: ExtensionAPI): void {
               runDir: "",
               envelope: null,
               parseError: formatError(error),
-              rawOutput: null,
+              rawOutputPath: "",
+              stderrPath: null,
+              rawOutputPreview: null,
+              stderrPreview: null,
+              references: {
+                recordPath: "",
+                statusPath: "",
+                resultPath: "",
+                rawOutputPath: "",
+                stderrPath: null,
+              },
             },
             isError: true,
           };
@@ -174,7 +194,7 @@ export default function lorePiRuntime(pi: ExtensionAPI): void {
             typeof params.limit === "number" ? params.limit : undefined,
           );
           return {
-            content: [{ type: "text", text: runs.length === 0 ? "No delegations found." : `${runs.length} delegation(s) found.` }],
+            content: [{ type: "text", text: formatDelegationListText(runs) }],
             details: { runs },
           };
         } catch (error) {
@@ -268,6 +288,51 @@ function formatModelRef(model: AvailableModelDescriptor): string | undefined {
 
 function isChildRuntime(): boolean {
   return process.env[CHILD_MARKER_ENV] === "1";
+}
+
+function formatDelegationListText(
+  runs: Array<{ id: string; agent: string; status: string; summary?: string; updatedAt: string }>,
+): string {
+  if (runs.length === 0) {
+    return "No delegations found.";
+  }
+
+  return [
+    `Delegations: ${runs.length}`,
+    ...runs.map((run) => [
+      `- id: ${run.id}`,
+      `  agent: ${run.agent}`,
+      `  status: ${run.status}`,
+      `  summary: ${run.summary ?? "(none)"}`,
+      `  updatedAt: ${run.updatedAt}`,
+    ].join("\n")),
+  ].join("\n");
+}
+
+function formatDelegationReadText(run: ReturnType<typeof readDelegation>): string {
+  const lines = [
+    `${run.record.id}: ${run.status?.summary ?? run.status?.status ?? run.record.status}`,
+    `status: ${run.status?.status ?? run.record.status}`,
+    `agent: ${run.record.requestedAgent === run.record.canonicalAgent ? run.record.canonicalAgent : `${run.record.requestedAgent} -> ${run.record.canonicalAgent}`}`,
+    `runDir: ${run.record.runDir}`,
+    `rawOutput: ${run.result?.rawOutputPath ?? run.record.files.rawOutput}`,
+  ];
+
+  if (run.result?.stderrPath ?? run.stderr) {
+    lines.push(`stderr: ${run.result?.stderrPath ?? run.record.files.stderr}`);
+  }
+  if (run.result?.parseError) {
+    lines.push(`parseError: ${run.result.parseError}`);
+  }
+
+  return lines.join("\n");
+}
+
+function previewText(value: string | null, max = 400): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  return trimmed.length > max ? `${trimmed.slice(0, max)}…` : trimmed;
 }
 
 function formatError(error: unknown): string {

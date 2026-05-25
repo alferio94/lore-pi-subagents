@@ -27,6 +27,7 @@ export interface RunRecord {
     status: string;
     result: string;
     rawOutput: string;
+    stderr: string;
   };
 }
 
@@ -43,6 +44,7 @@ export interface StoredRunResult {
   updatedAt: string;
   envelope?: DelegationEnvelope;
   rawOutputPath?: string;
+  stderrPath?: string;
   parseError?: string;
 }
 
@@ -51,12 +53,14 @@ export interface RecoveredRun {
   status: StoredRunStatus | null;
   result: StoredRunResult | null;
   rawOutput: string | null;
+  stderr: string | null;
 }
 
 const RECORD_FILE = "record.json";
 const STATUS_FILE = "status.json";
 const RESULT_FILE = "result.json";
 const RAW_OUTPUT_FILE = "raw-output.txt";
+const STDERR_FILE = "stderr.txt";
 
 export function createRunRecord(input: CreateRunRecordInput): RunRecord {
   const runDir = path.join(path.resolve(input.rootDir), input.delegationId);
@@ -78,6 +82,7 @@ export function createRunRecord(input: CreateRunRecordInput): RunRecord {
       status: path.join(runDir, STATUS_FILE),
       result: path.join(runDir, RESULT_FILE),
       rawOutput: path.join(runDir, RAW_OUTPUT_FILE),
+      stderr: path.join(runDir, STDERR_FILE),
     },
   };
 
@@ -90,8 +95,13 @@ export function createRunRecord(input: CreateRunRecordInput): RunRecord {
   return record;
 }
 
-export function storeRunOutput(record: RunRecord, rawOutput: string): StoredRunResult {
+export function storeRunOutput(record: RunRecord, rawOutput: string, stderrText = ""): StoredRunResult {
   writeTextAtomic(record.files.rawOutput, rawOutput);
+  if (stderrText.trim()) {
+    writeTextAtomic(record.files.stderr, stderrText);
+  } else if (fs.existsSync(record.files.stderr)) {
+    fs.rmSync(record.files.stderr, { force: true });
+  }
 
   const timestamp = new Date().toISOString();
   const parsed = parseEnvelope(extractEnvelopeOutput(rawOutput));
@@ -114,11 +124,13 @@ export function storeRunOutput(record: RunRecord, rawOutput: string): StoredRunR
         updatedAt: timestamp,
         envelope: parsed.envelope,
         rawOutputPath: record.files.rawOutput,
+        ...(stderrText.trim() ? { stderrPath: record.files.stderr } : {}),
       }
     : {
         status: "failed",
         updatedAt: timestamp,
         rawOutputPath: record.files.rawOutput,
+        ...(stderrText.trim() ? { stderrPath: record.files.stderr } : {}),
         parseError: parsed.error,
       };
 
@@ -135,9 +147,11 @@ export function recoverRun(runDir: string): RecoveredRun {
   const statusPath = path.join(absoluteRunDir, STATUS_FILE);
   const resultPath = path.join(absoluteRunDir, RESULT_FILE);
   const rawOutputPath = path.join(absoluteRunDir, RAW_OUTPUT_FILE);
+  const stderrPath = path.join(absoluteRunDir, STDERR_FILE);
 
   const record = readJson<RunRecord>(recordPath);
   const rawOutput = fs.existsSync(rawOutputPath) ? fs.readFileSync(rawOutputPath, "utf8") : null;
+  const stderr = fs.existsSync(stderrPath) ? fs.readFileSync(stderrPath, "utf8") : null;
   let status = fs.existsSync(statusPath) ? readJson<StoredRunStatus>(statusPath) : null;
   let result = fs.existsSync(resultPath) ? readJson<StoredRunResult>(resultPath) : null;
 
@@ -156,6 +170,7 @@ export function recoverRun(runDir: string): RecoveredRun {
         updatedAt,
         envelope: parsed.envelope,
         rawOutputPath,
+        ...(stderr ? { stderrPath } : {}),
       };
     } else {
       status ??= {
@@ -167,6 +182,7 @@ export function recoverRun(runDir: string): RecoveredRun {
         status: "failed",
         updatedAt,
         rawOutputPath,
+        ...(stderr ? { stderrPath } : {}),
         parseError: parsed.error,
       };
     }
@@ -177,6 +193,7 @@ export function recoverRun(runDir: string): RecoveredRun {
     status,
     result,
     rawOutput,
+    stderr,
   };
 }
 

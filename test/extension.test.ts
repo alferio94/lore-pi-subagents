@@ -113,7 +113,14 @@ test("lore-models command lists available Pi models from the model registry", as
       const command = fake.commands.find((candidate) => candidate.name === LORE_MODELS_COMMAND);
       assert.ok(command?.definition.handler);
 
-      const selections = ["lore-worker: inherit", "Use model: openai-codex/gpt-5.5", "Done (model=openai-codex/gpt-5.5)", "Done"];
+      const selections = [
+        "Agent routes (10)",
+        "lore-worker: inherit",
+        "openai-codex/gpt-5.5",
+        "Inherit thinking (current)",
+        "Save (model=openai-codex/gpt-5.5)",
+        "Done",
+      ];
       const ctx = {
         cwd: projectDir,
         modelRegistry: {
@@ -227,6 +234,7 @@ test("delegate runs a child, then delegation_read and delegation_list recover th
       LORE_PI_RUNTIME_PI_COMMAND: fakePi,
       LORE_PI_CHILD: undefined,
       LORE_PI_RUN_DIR: undefined,
+      LORE_PI_DELEGATION_DEPTH: undefined,
     },
     async () => {
       const fake = makeFakePi();
@@ -250,18 +258,25 @@ test("delegate runs a child, then delegation_read and delegation_list recover th
       assert.equal(delegated.details.envelope.summary, "Child finished.");
 
       const readBack = (await read.execute("tool-2", { id: delegated.details.id })) as {
-        details: { status: string; envelope: { summary: string } };
+        content: Array<{ text: string }>;
+        details: { status: string; envelope: { summary: string }; rawOutputPath: string; rawOutputPreview: string };
       };
       assert.equal(readBack.details.status, "completed");
       assert.equal(readBack.details.envelope.summary, "Child finished.");
+      assert.match(readBack.content[0].text, /rawOutput:/);
+      assert.match(readBack.details.rawOutputPath, /raw-output\.txt$/);
+      assert.match(readBack.details.rawOutputPreview, /Child finished\./);
 
       const listed = (await list.execute("tool-3", {})) as {
-        details: { runs: Array<{ id: string; status: string; summary: string }> };
+        content: Array<{ text: string }>;
+        details: { runs: Array<{ id: string; agent: string; status: string; summary: string }> };
       };
       assert.equal(listed.details.runs.length, 1);
       assert.equal(listed.details.runs[0].id, delegated.details.id);
+      assert.equal(listed.details.runs[0].agent, "lore-worker");
       assert.equal(listed.details.runs[0].status, "completed");
       assert.equal(listed.details.runs[0].summary, "Child finished.");
+      assert.match(listed.content[0].text, /agent: lore-worker/);
     },
   );
 });
@@ -288,6 +303,7 @@ test("delegate persists needs_user_input envelopes without widening child runtim
       LORE_PI_RUNTIME_PI_COMMAND: fakePi,
       LORE_PI_CHILD: undefined,
       LORE_PI_RUN_DIR: undefined,
+      LORE_PI_DELEGATION_DEPTH: undefined,
     },
     async () => {
       const fake = makeFakePi();
@@ -348,6 +364,7 @@ test("delegate ignores project-local .pi/lore/models.json overrides and uses the
       LORE_PI_RUNTIME_MODELS_PATH: globalModelsPath,
       LORE_PI_CHILD: undefined,
       LORE_PI_RUN_DIR: undefined,
+      LORE_PI_DELEGATION_DEPTH: undefined,
     },
     async () => {
       const fake = makeFakePi();

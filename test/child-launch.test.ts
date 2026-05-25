@@ -18,10 +18,21 @@ function makeTempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "lore-pi-runtime-child-"));
 }
 
+async function withCleanChildEnv<T>(run: () => Promise<T> | T): Promise<T> {
+  const previous = process.env.LORE_PI_DELEGATION_DEPTH;
+  delete process.env.LORE_PI_DELEGATION_DEPTH;
+  try {
+    return await run();
+  } finally {
+    if (previous === undefined) delete process.env.LORE_PI_DELEGATION_DEPTH;
+    else process.env.LORE_PI_DELEGATION_DEPTH = previous;
+  }
+}
+
 test("prepareChildLaunch enforces depth=1 and deduplicates tool/extension filters", async () => {
   const root = makeTempDir();
 
-  const prepared = await prepareChildLaunch({
+  const prepared = await withCleanChildEnv(() => prepareChildLaunch({
     cwd: root,
     prompt: "Task: inspect repo",
     delegationId: "dg-123",
@@ -32,7 +43,7 @@ test("prepareChildLaunch enforces depth=1 and deduplicates tool/extension filter
     extensionSources: ["./src/extension/index.ts", "./src/extension/index.ts"],
     model: "openai/gpt-5-mini",
     thinking: "low",
-  });
+  }));
 
   assert.equal(prepared.command, "pi");
   assert.deepEqual(prepared.args, [
@@ -64,7 +75,7 @@ test("prepareChildLaunch enforces depth=1 and deduplicates tool/extension filter
 test("prepareChildLaunch rejects nested delegation beyond max depth", async () => {
   await assert.rejects(
     () =>
-      prepareChildLaunch({
+      withCleanChildEnv(() => prepareChildLaunch({
         cwd: makeTempDir(),
         prompt: "Task: recurse",
         delegationId: "dg-nested",
@@ -72,7 +83,7 @@ test("prepareChildLaunch rejects nested delegation beyond max depth", async () =
         canonicalAgent: "lore-worker",
         runDir: makeTempDir(),
         env: { [CHILD_DEPTH_ENV]: "1" },
-      }),
+      })),
     /exceeds max depth/i,
   );
 });
@@ -90,7 +101,7 @@ fs.writeFileSync(process.env.CHILD_TEST_OUTPUT, JSON.stringify({ args: process.a
     { mode: 0o755 },
   );
 
-  const launched = await launchChildProcess({
+  const launched = await withCleanChildEnv(() => launchChildProcess({
     cwd: root,
     prompt: "Task: do the thing",
     delegationId: "dg-456",
@@ -102,7 +113,7 @@ fs.writeFileSync(process.env.CHILD_TEST_OUTPUT, JSON.stringify({ args: process.a
     systemPrompt: "You are a child runtime.",
     piCommand: fakePi,
     env: { CHILD_TEST_OUTPUT: outputPath },
-  });
+  }));
 
   const exitCode = await launched.completion;
   assert.equal(exitCode, 0);
