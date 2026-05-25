@@ -78,3 +78,64 @@ test("openLoreModelsUI allows backing out without saving", async () => {
   assert.equal(writeCount, 0);
   assert.deepEqual(result, makeConfig());
 });
+
+test("openLoreModelsUI prefers the centered custom overlay when available", async () => {
+  const customSelections = ["Done"];
+  const overlayCalls: Array<{ lines: string[]; options: unknown }> = [];
+  let selectCalls = 0;
+
+  const result = await openLoreModelsUI({
+    ui: {
+      async select() {
+        selectCalls += 1;
+        return null;
+      },
+      async input() {
+        throw new Error("manual input not expected");
+      },
+      notify() {},
+      async custom<T>(
+        factory: (
+          tui: { requestRender(): void },
+          theme: { fg(color: string, text: string): string; bold(text: string): string },
+          keybindings: unknown,
+          done: (value: T) => void,
+        ) => { render(width: number): string[]; handleInput(data: string): void; invalidate?(): void },
+        options?: unknown,
+      ) {
+        const next = (customSelections.shift() ?? null) as T;
+        const renderer = factory(
+          { requestRender() {} },
+          {
+            fg(_color: string, text: string) { return text; },
+            bold(text: string) { return text; },
+          },
+          null,
+          (() => {}) as (value: T) => void,
+        );
+        overlayCalls.push({ lines: renderer.render(80), options });
+        return next;
+      },
+    },
+  }, {
+    availableModels: ["openai/gpt-5"],
+    agentNames: ["lore-worker"],
+    readConfig: async () => makeConfig(),
+    writeConfig: async (config) => config,
+  });
+
+  assert.equal(selectCalls, 0);
+  assert.deepEqual(result, makeConfig());
+  assert.equal(overlayCalls.length, 1);
+  assert.match(overlayCalls[0].lines.join("\n"), /Global routing only/);
+  assert.deepEqual(overlayCalls[0].options, {
+    overlay: true,
+    overlayOptions: {
+      anchor: "center",
+      width: "74%",
+      minWidth: 68,
+      maxHeight: "80%",
+      margin: 1,
+    },
+  });
+});
