@@ -255,12 +255,12 @@ function createDelegationId(): string {
   return `dg-${randomUUID().split("-")[0]}`;
 }
 
-function buildChildSystemPrompt(agent: AgentDefinition): string {
+export function buildChildSystemPrompt(agent: AgentDefinition): string {
   const base = agent.body.trim();
   const isSdd = agent.requiredEnvelope === "sdd" || (agent.phase !== undefined) || isSddAgent(agent.name);
   const envelope = isSdd
-    ? `Return ONLY one JSON object with exactly these keys: status, phase, summary, artifacts, next, question, options, risks, skill_resolution. phase must match the SDD phase. status must be one of: completed, running, needs_user_input, failed. skill_resolution must be one of: injected, fallback-registry, fallback-path, none. artifacts/options/risks must be string arrays. next/question must be string or null.`
-    : `Return ONLY one JSON object with exactly these keys: status, summary, artifacts, next, question, options, risks, skill_resolution. Do not include prose, markdown fences, or extra keys. status must be one of: completed, running, needs_user_input, failed. skill_resolution must be one of: injected, fallback-registry, fallback-path, none. artifacts/options/risks must be string arrays. next/question must be string or null.`;
+    ? `Return ONLY one JSON object with exactly these keys: status, phase, summary, artifacts, next, question, options, risks, skill_resolution. phase must match the SDD phase. Final output status must be one of: completed, needs_user_input, failed. Do not use running in the final response; running is reserved for parent-side transient process state while the child is still alive. skill_resolution must be one of: injected, fallback-registry, fallback-path, none. artifacts/options/risks must be string arrays. next/question must be string or null.`
+    : `Return ONLY one JSON object with exactly these keys: status, summary, artifacts, next, question, options, risks, skill_resolution. Do not include prose, markdown fences, or extra keys. Final output status must be one of: completed, needs_user_input, failed. Do not use running in the final response; running is reserved for parent-side transient process state while the child is still alive. skill_resolution must be one of: injected, fallback-registry, fallback-path, none. artifacts/options/risks must be string arrays. next/question must be string or null.`;
   const example = isSdd
     ? `Example shape: {"status":"completed","phase":"${agent.phase ?? "apply"}","summary":"...","artifacts":[],"next":null,"question":null,"options":[],"risks":[],"skill_resolution":"none"}`
     : `Example shape: {"status":"completed","summary":"...","artifacts":[],"next":null,"question":null,"options":[],"risks":[],"skill_resolution":"none"}`;
@@ -276,25 +276,42 @@ function discoverChildExtensions(): string[] {
   return extensions;
 }
 
-async function finalizeChildRun(
+export async function finalizeChildRun(
   record: RunRecord,
   stdout: NodeJS.ReadableStream,
   stderr: NodeJS.ReadableStream,
   completion: Promise<number>,
   onFinish?: (event: BackgroundDelegationEvent) => void,
 ): Promise<void> {
-  const [stdoutText, stderrText] = await Promise.all([readStream(stdout), readStream(stderr), completion]);
-  const rawOutput = stdoutText.trim() || stderrText.trim() || JSON.stringify({
-    status: "failed",
-    summary: "Child process exited without JSON output.",
-    artifacts: [],
-    next: null,
-    question: null,
-    options: [],
-    risks: stderrText.trim() ? [stderrText.trim()] : [],
-    skill_resolution: "none",
-  });
-  const result = storeRunOutput(record, rawOutput, stderrText);
+  let result: ReturnType<typeof storeRunOutput>;
+
+  try {
+    const [stdoutText, stderrText, exitCode] = await Promise.all([readStream(stdout), readStream(stderr), completion]);
+    const rawOutput = stdoutText.trim() || stderrText.trim() || JSON.stringify({
+      status: "failed",
+      summary: exitCode === 0 ? "Child process exited without JSON output." : `Child process exited with code ${exitCode} without JSON output.`,
+      artifacts: [],
+      next: null,
+      question: null,
+      options: [],
+      risks: stderrText.trim() ? [stderrText.trim()] : [],
+      skill_resolution: "none",
+    });
+    result = storeRunOutput(record, rawOutput, stderrText);
+  } catch (error) {
+    const stderrText = formatError(error);
+    result = storeRunOutput(record, JSON.stringify({
+      status: "failed",
+      summary: "Child process failed before producing a final envelope.",
+      artifacts: [],
+      next: null,
+      question: null,
+      options: [],
+      risks: [stderrText],
+      skill_resolution: "none",
+    }), stderrText);
+  }
+
   onFinish?.({
     delegationId: record.id,
     agent: formatListedAgent(record.requestedAgent, record.canonicalAgent),
@@ -322,6 +339,10 @@ function sanitizeNotificationText(value: string | undefined, maxLength = 240): s
   const singleLine = value.replace(/\s+/g, " ").trim();
   if (!singleLine) return undefined;
   return singleLine.length > maxLength ? `${singleLine.slice(0, maxLength - 1)}…` : singleLine;
+}
+
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function readStream(stream: NodeJS.ReadableStream): Promise<string> {

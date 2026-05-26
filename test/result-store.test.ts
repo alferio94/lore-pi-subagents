@@ -122,6 +122,37 @@ test("storeRunOutput extracts final assistant envelope from Pi JSON event stream
   assert.equal(fs.readFileSync(record.files.rawOutput, "utf8"), rawOutput);
 });
 
+test("storeRunOutput rejects final child envelopes that still claim running", () => {
+  const rootDir = makeTempDir();
+  const record = createRunRecord({
+    rootDir,
+    delegationId: "dg-running",
+    requestedAgent: "lore-worker",
+    canonicalAgent: "lore-worker",
+    cwd: "/repo",
+  });
+
+  const result = storeRunOutput(record, JSON.stringify({
+    status: "running",
+    summary: "Still working.",
+    artifacts: [],
+    next: null,
+    question: null,
+    options: [],
+    risks: [],
+    skill_resolution: "none",
+  }));
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.envelope, undefined);
+  assert.match(result.parseError ?? "", /cannot use status 'running'/i);
+
+  const recovered = recoverRun(record.runDir);
+  assert.equal(recovered.record.status, "failed");
+  assert.equal(recovered.status?.status, "failed");
+  assert.match(recovered.result?.parseError ?? "", /cannot use status 'running'/i);
+});
+
 test("storeRunOutput preserves malformed raw output for recovery", () => {
   const rootDir = makeTempDir();
   const record = createRunRecord({

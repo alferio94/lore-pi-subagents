@@ -12,6 +12,8 @@ import runtimeExtension, {
   LORE_MODELS_COMMAND,
 } from "../src/extension/index.ts";
 import { getRuntimeInvariants } from "../src/runtime/contract.ts";
+import { buildChildSystemPrompt } from "../src/runtime/delegations.ts";
+import type { AgentDefinition } from "../src/runtime/types.ts";
 
 async function withEnv<T>(patch: Record<string, string | undefined>, run: () => Promise<T> | T): Promise<T> {
   const previous = new Map<string, string | undefined>();
@@ -522,6 +524,85 @@ test("delegate async notifies needs_user_input as a warning and preserves SDD de
   );
 });
 
+test("child prompt forbids final running envelopes", () => {
+  const workerAgent: AgentDefinition = {
+    name: "lore-worker",
+    description: "worker",
+    systemPromptMode: "replace",
+    inheritProjectContext: true,
+    body: "Base worker prompt.",
+    source: "builtin",
+    filePath: "/tmp/lore-worker.md",
+    metadata: {},
+    requiredEnvelope: "worker",
+  };
+  const sddAgent: AgentDefinition = {
+    ...workerAgent,
+    name: "sdd-apply",
+    phase: "apply",
+    requiredEnvelope: "sdd",
+  };
+
+  const workerPrompt = buildChildSystemPrompt(workerAgent);
+  const sddPrompt = buildChildSystemPrompt(sddAgent);
+
+  assert.match(workerPrompt, /Do not use running in the final response/i);
+  assert.match(sddPrompt, /Do not use running in the final response/i);
+  assert.doesNotMatch(workerPrompt, /status must be one of: completed, running, needs_user_input, failed/i);
+  assert.doesNotMatch(sddPrompt, /status must be one of: completed, running, needs_user_input, failed/i);
+});
+
+test("delegate persists failed result when child output ends with status running", async () => {
+  const homeDir = makeTempDir();
+  const runRoot = path.join(homeDir, "runs");
+  const fakePi = writeFakePi(homeDir, {
+    status: "running",
+    summary: "Still working.",
+    artifacts: [],
+    next: null,
+    question: null,
+    options: [],
+    risks: [],
+    skill_resolution: "none",
+  });
+
+  await withEnv(
+    {
+      HOME: homeDir,
+      LORE_PI_RUNTIME_RUN_ROOT: runRoot,
+      LORE_PI_RUNTIME_MODELS_PATH: path.join(homeDir, "models.json"),
+      LORE_PI_RUNTIME_PI_COMMAND: fakePi,
+      LORE_PI_CHILD: undefined,
+      LORE_PI_RUN_DIR: undefined,
+      LORE_PI_DELEGATION_DEPTH: undefined,
+    },
+    async () => {
+      const fake = makeFakePi();
+      runtimeExtension(fake.api as never);
+      const delegate = fake.tools.get(DELEGATE_TOOL_NAME);
+      assert.ok(delegate);
+
+      const delegated = (await delegate.execute("tool-final-running", {
+        agent: "lore-worker",
+        task: "Inspect the repo.",
+        cwd: homeDir,
+      })) as { details: { id: string; status: string; envelope: unknown } };
+
+      assert.equal(delegated.details.status, "failed");
+      assert.equal(delegated.details.envelope, null);
+
+      const read = fake.tools.get(DELEGATION_READ_TOOL_NAME);
+      assert.ok(read);
+      const readBack = (await read.execute("tool-final-running-read", { id: delegated.details.id })) as {
+        details: { status: string; parseError: string; envelope: unknown };
+      };
+      assert.equal(readBack.details.status, "failed");
+      assert.equal(readBack.details.envelope, null);
+      assert.match(readBack.details.parseError, /cannot use status 'running'/i);
+    },
+  );
+});
+
 test("delegate async notifies parse errors without exposing raw output", async () => {
   const homeDir = makeTempDir();
   const runRoot = path.join(homeDir, "runs");
@@ -582,14 +663,6 @@ test("delegate grants lore memory tools to every child before launching", async 
     skill_resolution: "none",
   });
 
-  const agentDir = path.join(projectDir, ".pi", "agents");
-  fs.mkdirSync(agentDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(agentDir, "memory-worker.md"),
-    `---\nname: memory-worker\ndescription: Memory-enabled worker\ntools:\n  - read\nsystemPromptMode: replace\ninheritProjectContext: true\n---\nUse Lore memory.\n`,
-    "utf8",
-  );
-
   await withEnv(
     {
       HOME: homeDir,
@@ -607,7 +680,7 @@ test("delegate grants lore memory tools to every child before launching", async 
       assert.ok(delegate);
 
       await delegate.execute("tool-lore-bundle", {
-        agent: "memory-worker",
+        agent: "lore-worker",
         task: "Use memory.",
         cwd: projectDir,
       });
@@ -618,6 +691,9 @@ test("delegate grants lore memory tools to every child before launching", async 
       const tools = recorded.args[toolsFlagIndex + 1].split(",");
       assert.deepEqual(tools, [
         "read",
+        "write",
+        "edit",
+        "bash",
         "lore_search",
         "lore_save",
         "lore_get_observation",

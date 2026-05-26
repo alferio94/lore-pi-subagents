@@ -104,41 +104,18 @@ export function storeRunOutput(record: RunRecord, rawOutput: string, stderrText 
   }
 
   const timestamp = new Date().toISOString();
-  const parsed = parseEnvelope(extractEnvelopeOutput(rawOutput));
-  const status: StoredRunStatus = parsed.ok
-    ? {
-        status: parsed.envelope.status,
-        updatedAt: timestamp,
-        summary: parsed.envelope.summary,
-        envelopeKind: parsed.kind,
-      }
-    : {
-        status: "failed",
-        updatedAt: timestamp,
-        parseError: parsed.error,
-      };
+  const stored = buildStoredRunArtifacts({
+    rawOutput,
+    updatedAt: timestamp,
+    rawOutputPath: record.files.rawOutput,
+    stderrPath: stderrText.trim() ? record.files.stderr : undefined,
+  });
 
-  const result: StoredRunResult = parsed.ok
-    ? {
-        status: parsed.envelope.status,
-        updatedAt: timestamp,
-        envelope: parsed.envelope,
-        rawOutputPath: record.files.rawOutput,
-        ...(stderrText.trim() ? { stderrPath: record.files.stderr } : {}),
-      }
-    : {
-        status: "failed",
-        updatedAt: timestamp,
-        rawOutputPath: record.files.rawOutput,
-        ...(stderrText.trim() ? { stderrPath: record.files.stderr } : {}),
-        parseError: parsed.error,
-      };
+  writeJsonAtomic(record.files.status, stored.status);
+  writeJsonAtomic(record.files.result, stored.result);
+  updateRecordStatus(record.files.record, stored.status.status, timestamp);
 
-  writeJsonAtomic(record.files.status, status);
-  writeJsonAtomic(record.files.result, result);
-  updateRecordStatus(record.files.record, status.status, timestamp);
-
-  return result;
+  return stored.result;
 }
 
 export function recoverRun(runDir: string): RecoveredRun {
@@ -156,36 +133,15 @@ export function recoverRun(runDir: string): RecoveredRun {
   let result = fs.existsSync(resultPath) ? readJson<StoredRunResult>(resultPath) : null;
 
   if ((!status || !result) && rawOutput) {
-    const parsed = parseEnvelope(extractEnvelopeOutput(rawOutput));
     const updatedAt = new Date().toISOString();
-    if (parsed.ok) {
-      status ??= {
-        status: parsed.envelope.status,
-        updatedAt,
-        summary: parsed.envelope.summary,
-        envelopeKind: parsed.kind,
-      };
-      result ??= {
-        status: parsed.envelope.status,
-        updatedAt,
-        envelope: parsed.envelope,
-        rawOutputPath,
-        ...(stderr ? { stderrPath } : {}),
-      };
-    } else {
-      status ??= {
-        status: "failed",
-        updatedAt,
-        parseError: parsed.error,
-      };
-      result ??= {
-        status: "failed",
-        updatedAt,
-        rawOutputPath,
-        ...(stderr ? { stderrPath } : {}),
-        parseError: parsed.error,
-      };
-    }
+    const stored = buildStoredRunArtifacts({
+      rawOutput,
+      updatedAt,
+      rawOutputPath,
+      stderrPath: stderr ? stderrPath : undefined,
+    });
+    status ??= stored.status;
+    result ??= stored.result;
   }
 
   return {
@@ -241,6 +197,50 @@ function extractLastAssistantTextFromPiJSON(rawOutput: string): string | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function buildStoredRunArtifacts(input: {
+  rawOutput: string;
+  updatedAt: string;
+  rawOutputPath: string;
+  stderrPath?: string;
+}): { status: StoredRunStatus; result: StoredRunResult } {
+  const parsed = parseEnvelope(extractEnvelopeOutput(input.rawOutput));
+  const invalidFinalStateError = "Final child envelope cannot use status 'running'; use completed, needs_user_input, or failed.";
+
+  if (parsed.ok && parsed.envelope.status !== "running") {
+    return {
+      status: {
+        status: parsed.envelope.status,
+        updatedAt: input.updatedAt,
+        summary: parsed.envelope.summary,
+        envelopeKind: parsed.kind,
+      },
+      result: {
+        status: parsed.envelope.status,
+        updatedAt: input.updatedAt,
+        envelope: parsed.envelope,
+        rawOutputPath: input.rawOutputPath,
+        ...(input.stderrPath ? { stderrPath: input.stderrPath } : {}),
+      },
+    };
+  }
+
+  const parseError = parsed.ok ? invalidFinalStateError : parsed.error;
+  return {
+    status: {
+      status: "failed",
+      updatedAt: input.updatedAt,
+      parseError,
+    },
+    result: {
+      status: "failed",
+      updatedAt: input.updatedAt,
+      rawOutputPath: input.rawOutputPath,
+      ...(input.stderrPath ? { stderrPath: input.stderrPath } : {}),
+      parseError,
+    },
+  };
 }
 
 function updateRecordStatus(recordPath: string, status: RunStatus, updatedAt: string): void {
