@@ -134,7 +134,8 @@ export default function lorePiRuntime(pi: ExtensionAPI): void {
               canonicalAgent: started.record.canonicalAgent,
               runDir: started.record.runDir,
               envelope: started.recovery.result?.envelope ?? null,
-              next: params.async === true ? DELEGATION_READ_TOOL_NAME : started.recovery.result?.envelope?.next ?? null,
+              next: params.async === true ? DELEGATION_READ_TOOL_NAME : started.recovery.result?.envelope?.next_step ?? null,
+              nextStep: params.async === true ? DELEGATION_READ_TOOL_NAME : started.recovery.result?.envelope?.next_step ?? null,
             },
           };
         } catch (error) {
@@ -148,6 +149,7 @@ export default function lorePiRuntime(pi: ExtensionAPI): void {
               runDir: "",
               envelope: null,
               next: null,
+              nextStep: null,
             },
             isError: true,
           };
@@ -351,6 +353,15 @@ function formatDelegationReadText(run: ReturnType<typeof readDelegation>): strin
     `rawOutput: ${run.result?.rawOutputPath ?? run.record.files.rawOutput}`,
   ];
 
+  if (run.result?.envelope) {
+    lines.push(`artifacts: ${run.result.envelope.artifacts.length > 0 ? run.result.envelope.artifacts.join("; ") : "(none)"}`);
+    lines.push(`files: ${run.result.envelope.files.length > 0 ? run.result.envelope.files.join("; ") : "(none)"}`);
+    lines.push(`validations: ${run.result.envelope.validations.length > 0 ? run.result.envelope.validations.join("; ") : "(none)"}`);
+    lines.push(`risks: ${run.result.envelope.risks.length > 0 ? run.result.envelope.risks.join("; ") : "(none)"}`);
+    lines.push(`next_step: ${run.result.envelope.next_step ?? "(none)"}`);
+    lines.push(`continuation: ${run.result.envelope.continuation ?? "(none)"}`);
+  }
+
   if (run.result?.stderrPath ?? run.stderr) {
     lines.push(`stderr: ${run.result?.stderrPath ?? run.record.files.stderr}`);
   }
@@ -420,8 +431,11 @@ function formatEnvelopeBlock(envelope: NonNullable<BackgroundDelegationEvent["en
     `Envelope status: ${envelope.status}`,
     `Summary: ${envelope.summary}`,
     `Artifacts: ${envelope.artifacts.length > 0 ? envelope.artifacts.join("; ") : "(none)"}`,
+    `Files: ${envelope.files.length > 0 ? envelope.files.join("; ") : "(none)"}`,
+    `Validations: ${envelope.validations.length > 0 ? envelope.validations.join("; ") : "(none)"}`,
     `Risks: ${envelope.risks.length > 0 ? envelope.risks.join("; ") : "(none)"}`,
-    `Next step: ${envelope.next || "(none)"}`,
+    `Next step: ${envelope.next_step || "(none)"}`,
+    `Continuation: ${envelope.continuation || "(none)"}`,
     `Skill resolution: ${envelope.skill_resolution}`,
   ];
 

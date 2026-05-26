@@ -42,7 +42,10 @@ test("storeRunOutput persists parsed SDD envelopes and updates run status", () =
       phase: "apply",
       summary: "Slice finished.",
       artifacts: ["sdd/change/apply-report"],
-      next: "verify",
+      files: [],
+      validations: ["npm test -- --testNamePattern=result-store"],
+      next_step: "verify",
+      continuation: "Recovered apply output is ready for verify.",
       question: null,
       options: [],
       risks: [],
@@ -52,6 +55,8 @@ test("storeRunOutput persists parsed SDD envelopes and updates run status", () =
 
   assert.equal(result.status, "completed");
   assert.equal(result.envelope?.status, "completed");
+  assert.equal(result.envelope?.validations[0], "npm test -- --testNamePattern=result-store");
+  assert.equal(result.envelope?.continuation, "Recovered apply output is ready for verify.");
   assert.equal(result.envelope && "phase" in result.envelope ? result.envelope.phase : null, "apply");
 
   const recovered = recoverRun(record.runDir);
@@ -74,7 +79,10 @@ test("recoverRun reconstructs result from raw output when result files are missi
     status: "needs_user_input",
     summary: "Need approval.",
     artifacts: ["memo-7"],
-    next: null,
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
     question: "Ship it?",
     options: ["yes", "no"],
     risks: ["Could block rollout."],
@@ -104,7 +112,10 @@ test("storeRunOutput extracts final assistant envelope from Pi JSON event stream
     status: "completed",
     summary: "smoke",
     artifacts: [],
-    next: null,
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
     question: null,
     options: [],
     risks: [],
@@ -136,7 +147,10 @@ test("storeRunOutput rejects final child envelopes that still claim running", ()
     status: "running",
     summary: "Still working.",
     artifacts: [],
-    next: null,
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
     question: null,
     options: [],
     risks: [],

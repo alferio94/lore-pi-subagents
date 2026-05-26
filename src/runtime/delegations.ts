@@ -259,11 +259,11 @@ export function buildChildSystemPrompt(agent: AgentDefinition): string {
   const base = agent.body.trim();
   const isSdd = agent.requiredEnvelope === "sdd" || (agent.phase !== undefined) || isSddAgent(agent.name);
   const envelope = isSdd
-    ? `Return ONLY one JSON object with exactly these keys: status, phase, summary, artifacts, next, question, options, risks, skill_resolution. phase must match the SDD phase. Final output status must be one of: completed, needs_user_input, failed. Do not use running in the final response; running is reserved for parent-side transient process state while the child is still alive. skill_resolution must be one of: injected, fallback-registry, fallback-path, none. artifacts/options/risks must be string arrays. next/question must be string or null.`
-    : `Return ONLY one JSON object with exactly these keys: status, summary, artifacts, next, question, options, risks, skill_resolution. Do not include prose, markdown fences, or extra keys. Final output status must be one of: completed, needs_user_input, failed. Do not use running in the final response; running is reserved for parent-side transient process state while the child is still alive. skill_resolution must be one of: injected, fallback-registry, fallback-path, none. artifacts/options/risks must be string arrays. next/question must be string or null.`;
+    ? `Return ONLY one JSON object with exactly these keys: status, phase, summary, artifacts, files, validations, risks, next_step, continuation, question, options, skill_resolution. phase must match the SDD phase. summary should stay concise. artifacts/files/validations/options/risks must be string arrays. next_step/continuation/question must be a string or null. Final output status must be one of: completed, needs_user_input, failed. Do not use running in the final response; running is reserved for parent-side transient process state while the child is still alive. skill_resolution must be one of: injected, fallback-registry, fallback-path, none.`
+    : `Return ONLY one JSON object with exactly these keys: status, summary, artifacts, files, validations, risks, next_step, continuation, question, options, skill_resolution. Do not include prose, markdown fences, or extra keys. summary should stay concise. artifacts/files/validations/options/risks must be string arrays. next_step/continuation/question must be a string or null. Final output status must be one of: completed, needs_user_input, failed. Do not use running in the final response; running is reserved for parent-side transient process state while the child is still alive. skill_resolution must be one of: injected, fallback-registry, fallback-path, none.`;
   const example = isSdd
-    ? `Example shape: {"status":"completed","phase":"${agent.phase ?? "apply"}","summary":"...","artifacts":[],"next":null,"question":null,"options":[],"risks":[],"skill_resolution":"none"}`
-    : `Example shape: {"status":"completed","summary":"...","artifacts":[],"next":null,"question":null,"options":[],"risks":[],"skill_resolution":"none"}`;
+    ? `Example shape: {"status":"completed","phase":"${agent.phase ?? "apply"}","summary":"...","artifacts":[],"files":[],"validations":[],"risks":[],"next_step":null,"continuation":null,"question":null,"options":[],"skill_resolution":"none"}`
+    : `Example shape: {"status":"completed","summary":"...","artifacts":[],"files":[],"validations":[],"risks":[],"next_step":null,"continuation":null,"question":null,"options":[],"skill_resolution":"none"}`;
   return [base, "", "## Required final response contract", envelope, example].filter(Boolean).join("\n");
 }
 
@@ -291,10 +291,13 @@ export async function finalizeChildRun(
       status: "failed",
       summary: exitCode === 0 ? "Child process exited without JSON output." : `Child process exited with code ${exitCode} without JSON output.`,
       artifacts: [],
-      next: null,
+      files: [],
+      validations: [],
+      risks: stderrText.trim() ? [stderrText.trim()] : [],
+      next_step: null,
+      continuation: null,
       question: null,
       options: [],
-      risks: stderrText.trim() ? [stderrText.trim()] : [],
       skill_resolution: "none",
     });
     result = storeRunOutput(record, rawOutput, stderrText);
@@ -304,10 +307,13 @@ export async function finalizeChildRun(
       status: "failed",
       summary: "Child process failed before producing a final envelope.",
       artifacts: [],
-      next: null,
+      files: [],
+      validations: [],
+      risks: [stderrText],
+      next_step: null,
+      continuation: null,
       question: null,
       options: [],
-      risks: [stderrText],
       skill_resolution: "none",
     }), stderrText);
   }

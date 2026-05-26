@@ -275,7 +275,10 @@ test("delegate runs a child, then delegation_read and delegation_list recover th
     status: "completed",
     summary: "Child finished.",
     artifacts: ["artifact-1"],
-    next: "verify",
+    files: ["src/runtime/envelopes.ts"],
+    validations: ["npm test -- test/envelopes.test.ts"],
+    next_step: "verify",
+    continuation: "Continue with verification if the parent wants a follow-up.",
     question: null,
     options: [],
     risks: [],
@@ -315,11 +318,18 @@ test("delegate runs a child, then delegation_read and delegation_list recover th
 
       const readBack = (await read.execute("tool-2", { id: delegated.details.id })) as {
         content: Array<{ text: string }>;
-        details: { status: string; envelope: { summary: string }; rawOutputPath: string; rawOutputPreview: string };
+        details: { status: string; envelope: { summary: string; next_step: string; continuation: string; files: string[]; validations: string[] }; rawOutputPath: string; rawOutputPreview: string };
       };
       assert.equal(readBack.details.status, "completed");
       assert.equal(readBack.details.envelope.summary, "Child finished.");
+      assert.equal(readBack.details.envelope.next_step, "verify");
+      assert.equal(readBack.details.envelope.continuation, "Continue with verification if the parent wants a follow-up.");
+      assert.deepEqual(readBack.details.envelope.files, ["src/runtime/envelopes.ts"]);
+      assert.deepEqual(readBack.details.envelope.validations, ["npm test -- test/envelopes.test.ts"]);
       assert.match(readBack.content[0].text, /rawOutput:/);
+      assert.match(readBack.content[0].text, /files: src\/runtime\/envelopes\.ts/);
+      assert.match(readBack.content[0].text, /validations: npm test -- test\/envelopes\.test\.ts/);
+      assert.match(readBack.content[0].text, /next_step: verify/);
       assert.match(readBack.details.rawOutputPath, /raw-output\.txt$/);
       assert.match(readBack.details.rawOutputPreview, /Child finished\./);
 
@@ -375,7 +385,10 @@ test("delegate persists needs_user_input envelopes without widening child runtim
     status: "needs_user_input",
     summary: "Need approval.",
     artifacts: ["artifact-2"],
-    next: null,
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
     question: "Ship it?",
     options: ["yes", "no"],
     risks: ["Could block rollout."],
@@ -418,7 +431,10 @@ test("delegate async notifies the parent UI when a background child completes", 
     status: "completed",
     summary: "Child finished with spaced\nsummary.",
     artifacts: [],
-    next: null,
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
     question: null,
     options: [],
     risks: [],
@@ -466,7 +482,10 @@ test("delegate async notifies needs_user_input as a warning and preserves SDD de
     phase: "apply",
     summary: "Approval needed.",
     artifacts: ["sdd/change/apply-report"],
-    next: null,
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
     question: "Ship it?",
     options: ["yes", "no"],
     risks: [],
@@ -511,7 +530,10 @@ test("delegate async notifies needs_user_input as a warning and preserves SDD de
         phase: "apply",
         summary: "Approval needed.",
         artifacts: ["sdd/change/apply-report"],
-        next: null,
+        files: [],
+        validations: [],
+        next_step: null,
+        continuation: null,
         question: "Ship it?",
         options: ["yes", "no"],
         risks: [],
@@ -547,7 +569,9 @@ test("child prompt forbids final running envelopes", () => {
   const sddPrompt = buildChildSystemPrompt(sddAgent);
 
   assert.match(workerPrompt, /Do not use running in the final response/i);
+  assert.match(workerPrompt, /files, validations, risks, next_step, continuation/i);
   assert.match(sddPrompt, /Do not use running in the final response/i);
+  assert.match(sddPrompt, /files, validations, risks, next_step, continuation/i);
   assert.doesNotMatch(workerPrompt, /status must be one of: completed, running, needs_user_input, failed/i);
   assert.doesNotMatch(sddPrompt, /status must be one of: completed, running, needs_user_input, failed/i);
 });
@@ -559,7 +583,10 @@ test("delegate persists failed result when child output ends with status running
     status: "running",
     summary: "Still working.",
     artifacts: [],
-    next: null,
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
     question: null,
     options: [],
     risks: [],
@@ -656,7 +683,10 @@ test("delegate grants lore memory tools to every child before launching", async 
     status: "completed",
     summary: "Child finished.",
     artifacts: [],
-    next: null,
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
     question: null,
     options: [],
     risks: [],
@@ -723,7 +753,10 @@ test("delegate ignores project-local .pi/lore/models.json overrides and uses the
     status: "completed",
     summary: "Child finished.",
     artifacts: [],
-    next: null,
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
     question: null,
     options: [],
     risks: [],

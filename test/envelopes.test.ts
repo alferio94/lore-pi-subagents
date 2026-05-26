@@ -7,7 +7,10 @@ test("validateWorkerEnvelope accepts strict worker JSON with no phase", () => {
     status: "completed",
     summary: "done",
     artifacts: ["memo-1"],
-    next: null,
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
     question: null,
     options: [],
     risks: [],
@@ -27,7 +30,10 @@ test("validateSddEnvelope accepts SDD needs_user_input envelopes", () => {
     phase: "apply",
     summary: "Need a decision.",
     artifacts: ["sdd/change/apply-report"],
-    next: null,
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
     question: "Which path should apply continue with?",
     options: ["A", "B"],
     risks: ["Scope could widen."],
@@ -57,7 +63,10 @@ test("parseEnvelope accepts strict SDD envelopes with skill_resolution", () => {
       phase: "apply",
       summary: "Slice finished.",
       artifacts: ["sdd/change/apply-report"],
-      next: "verify",
+      files: [],
+      validations: [],
+      next_step: "verify",
+      continuation: "Resume from verify if requested.",
       question: null,
       options: [],
       risks: [],
@@ -69,6 +78,32 @@ test("parseEnvelope accepts strict SDD envelopes with skill_resolution", () => {
   if (result.ok) {
     assert.equal(result.kind, "sdd");
     assert.equal(result.envelope.skill_resolution, "injected");
+    assert.equal(result.envelope.next_step, "verify");
+    assert.equal(result.envelope.continuation, "Resume from verify if requested.");
+  }
+});
+
+test("parseEnvelope normalizes legacy next-based worker envelopes into the richer handoff shape", () => {
+  const result = parseEnvelope(
+    JSON.stringify({
+      status: "completed",
+      summary: "Legacy worker done.",
+      artifacts: ["artifact-1"],
+      next: "follow-up",
+      question: null,
+      options: [],
+      risks: [],
+      skill_resolution: "none",
+    }),
+  );
+
+  assert.equal(result.ok, true);
+  if (result.ok) {
+    assert.equal(result.kind, "worker");
+    assert.deepEqual(result.envelope.files, []);
+    assert.deepEqual(result.envelope.validations, []);
+    assert.equal(result.envelope.next_step, "follow-up");
+    assert.equal(result.envelope.continuation, null);
   }
 });
 
@@ -78,7 +113,10 @@ test("validateWorkerEnvelope rejects phase leakage into worker envelopes", () =>
     phase: "apply",
     summary: "done",
     artifacts: [],
-    next: null,
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
     question: null,
     options: [],
     risks: [],
@@ -97,7 +135,10 @@ test("validateSddEnvelope requires question and options for needs_user_input", (
     phase: "apply",
     summary: "Need help.",
     artifacts: [],
-    next: null,
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
     question: null,
     options: [],
     risks: [],
@@ -115,7 +156,10 @@ test("validateWorkerEnvelope also requires question and options for needs_user_i
     status: "needs_user_input",
     summary: "Need help.",
     artifacts: [],
-    next: null,
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
     question: "",
     options: [],
     risks: [],
@@ -134,7 +178,10 @@ test("validateSddEnvelope rejects unsupported keys for strict contracts", () => 
     phase: "apply",
     summary: "done",
     artifacts: [],
-    next: null,
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
     question: null,
     options: [],
     risks: [],

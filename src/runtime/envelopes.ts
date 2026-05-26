@@ -11,10 +11,13 @@ export interface WorkerEnvelope {
   status: RunStatus;
   summary: string;
   artifacts: string[];
-  next: string | null;
+  files: string[];
+  validations: string[];
+  risks: string[];
+  next_step: string | null;
+  continuation: string | null;
   question: string | null;
   options: string[];
-  risks: string[];
   skill_resolution: SkillResolution;
 }
 
@@ -76,15 +79,16 @@ export function validateWorkerEnvelope(value: unknown): EnvelopeParseResult<Work
     return { ok: false, error: "Worker envelope must be a JSON object." };
   }
 
-  const extraKeys = findExtraKeys(value, WORKER_KEYS);
+  const normalized = normalizeEnvelopeRecord(value);
+  const extraKeys = findExtraKeys(normalized, WORKER_KEYS);
   if (extraKeys.length > 0) {
     return { ok: false, error: `Worker envelope contains unsupported keys: ${extraKeys.join(", ")}.` };
   }
 
-  const base = validateBaseEnvelope(value);
+  const base = validateBaseEnvelope(normalized);
   if (!base.ok) return base;
 
-  if ("phase" in value) {
+  if ("phase" in normalized) {
     return { ok: false, error: "Worker envelope must not include 'phase'." };
   }
 
@@ -96,15 +100,16 @@ export function validateSddEnvelope(value: unknown): EnvelopeParseResult<SddEnve
     return { ok: false, error: "SDD envelope must be a JSON object." };
   }
 
-  const extraKeys = findExtraKeys(value, SDD_KEYS);
+  const normalized = normalizeEnvelopeRecord(value);
+  const extraKeys = findExtraKeys(normalized, SDD_KEYS);
   if (extraKeys.length > 0) {
     return { ok: false, error: `SDD envelope contains unsupported keys: ${extraKeys.join(", ")}.` };
   }
 
-  const base = validateBaseEnvelope(value);
+  const base = validateBaseEnvelope(normalized);
   if (!base.ok) return base;
 
-  if (!isOneOf(value.phase, SDD_PHASES)) {
+  if (!isOneOf(normalized.phase, SDD_PHASES)) {
     return { ok: false, error: `SDD envelope 'phase' must be one of: ${SDD_PHASES.join(", ")}.` };
   }
 
@@ -113,7 +118,7 @@ export function validateSddEnvelope(value: unknown): EnvelopeParseResult<SddEnve
     kind: "sdd",
     envelope: {
       ...base.envelope,
-      phase: value.phase,
+      phase: normalized.phase,
     },
   };
 }
@@ -128,17 +133,26 @@ function validateBaseEnvelope(value: Record<string, unknown>): EnvelopeParseResu
   if (!isStringArray(value.artifacts)) {
     return { ok: false, error: "Envelope 'artifacts' must be an array of strings." };
   }
-  if (!isNullableString(value.next)) {
-    return { ok: false, error: "Envelope 'next' must be a string or null." };
+  if (!isStringArray(value.files)) {
+    return { ok: false, error: "Envelope 'files' must be an array of strings." };
+  }
+  if (!isStringArray(value.validations)) {
+    return { ok: false, error: "Envelope 'validations' must be an array of strings." };
+  }
+  if (!isStringArray(value.risks)) {
+    return { ok: false, error: "Envelope 'risks' must be an array of strings." };
+  }
+  if (!isNullableString(value.next_step)) {
+    return { ok: false, error: "Envelope 'next_step' must be a string or null." };
+  }
+  if (!isNullableString(value.continuation)) {
+    return { ok: false, error: "Envelope 'continuation' must be a string or null." };
   }
   if (!isNullableString(value.question)) {
     return { ok: false, error: "Envelope 'question' must be a string or null." };
   }
   if (!isStringArray(value.options)) {
     return { ok: false, error: "Envelope 'options' must be an array of strings." };
-  }
-  if (!isStringArray(value.risks)) {
-    return { ok: false, error: "Envelope 'risks' must be an array of strings." };
   }
   if (!isOneOf(value.skill_resolution, SKILL_RESOLUTIONS)) {
     return { ok: false, error: `Envelope 'skill_resolution' must be one of: ${SKILL_RESOLUTIONS.join(", ")}.` };
@@ -160,17 +174,49 @@ function validateBaseEnvelope(value: Record<string, unknown>): EnvelopeParseResu
       status: value.status,
       summary: value.summary,
       artifacts: value.artifacts,
-      next: value.next,
+      files: value.files,
+      validations: value.validations,
+      risks: value.risks,
+      next_step: value.next_step,
+      continuation: value.continuation,
       question: value.question,
       options: value.options,
-      risks: value.risks,
       skill_resolution: value.skill_resolution,
     },
   };
 }
 
-const WORKER_KEYS = ["status", "summary", "artifacts", "next", "question", "options", "risks", "skill_resolution"] as const;
+const WORKER_KEYS = ["status", "summary", "artifacts", "files", "validations", "risks", "next_step", "continuation", "question", "options", "skill_resolution"] as const;
 const SDD_KEYS = [...WORKER_KEYS, "phase"] as const;
+
+function normalizeEnvelopeRecord(value: Record<string, unknown>): Record<string, unknown> {
+  const normalized: Record<string, unknown> = { ...value };
+
+  if (!("next_step" in normalized) && "next" in normalized) {
+    normalized.next_step = normalized.next;
+  }
+  delete normalized.next;
+
+  if (!("continuation" in normalized) && "continuation_context" in normalized) {
+    normalized.continuation = normalized.continuation_context;
+  }
+  delete normalized.continuation_context;
+
+  if (!("files" in normalized)) {
+    normalized.files = [];
+  }
+  if (!("validations" in normalized)) {
+    normalized.validations = [];
+  }
+  if (!("next_step" in normalized)) {
+    normalized.next_step = null;
+  }
+  if (!("continuation" in normalized)) {
+    normalized.continuation = null;
+  }
+
+  return normalized;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
