@@ -4,6 +4,8 @@ export type ContractPhase = "init" | "explore" | "propose" | "spec" | "design" |
 export type SourceLocatorKind = "pi-settings-package";
 export type ConflictPolicy = "non-destructive-warn" | "replace-on-refresh";
 export type SkillPolicyMode = "registry" | "explicit" | "none";
+export type AgentResolutionSource = "builtin" | "managed" | "user" | "project";
+export type ProjectAgentsMode = "enabled" | "disabled";
 
 export interface RuntimeContract {
   version: number;
@@ -29,6 +31,20 @@ export interface RuntimeContract {
   builtinCatalog: {
     aliases: ContractAlias[];
     agents: BuiltinAgentContract[];
+  };
+  // Managed overlays are installer-owned global agent markdown files. Runtime keeps
+  // builtin prompts canonical, lets managed overlays override builtins, lets user
+  // globals override managed, and gates project-local `.pi/agents` behind the
+  // documented settings toggle instead of installer-side file writes.
+  agentResolution: {
+    managedFilenamePrefix: string;
+    managedFrontmatter: {
+      managedBy: string;
+      managedLayer: string;
+    };
+    precedence: AgentResolutionSource[];
+    projectAgentsDefault: ProjectAgentsMode;
+    projectAgentsSettingPath: string;
   };
   runtimeInvariants: {
     projectOverridesBuiltinPrompts: boolean;
@@ -76,6 +92,7 @@ export function validateRuntimeContract(value: unknown): RuntimeContract {
   const entrypoint = validateEntrypoint(contract.entrypoint, "entrypoint");
   const installPolicy = validateInstallPolicy(contract.installPolicy, "installPolicy");
   const builtinCatalog = validateBuiltinCatalog(contract.builtinCatalog, "builtinCatalog");
+  const agentResolution = validateAgentResolution(contract.agentResolution, "agentResolution");
   const runtimeInvariants = validateRuntimeInvariants(contract.runtimeInvariants, "runtimeInvariants");
 
   if (version < 1) {
@@ -89,6 +106,7 @@ export function validateRuntimeContract(value: unknown): RuntimeContract {
     entrypoint,
     installPolicy,
     builtinCatalog,
+    agentResolution,
     runtimeInvariants,
   };
 }
@@ -238,6 +256,28 @@ function validateSkillPolicy(value: unknown, path: string): SkillPolicy {
   }
 
   return files ? { mode, files } : { mode };
+}
+
+function validateAgentResolution(value: unknown, path: string): RuntimeContract["agentResolution"] {
+  const node = asObject(value, path);
+  const managedFrontmatterNode = asObject(node.managedFrontmatter, pathDot(path, "managedFrontmatter"));
+  const precedence = asArray(node.precedence, pathDot(path, "precedence")).map((item, index) =>
+    asEnum(item, `${path}.precedence[${index}]`, ["builtin", "managed", "user", "project"] as const),
+  );
+  const expectedPrecedence: AgentResolutionSource[] = ["builtin", "managed", "user", "project"];
+  if (precedence.length !== expectedPrecedence.length || precedence.some((value, index) => value !== expectedPrecedence[index])) {
+    throw new Error(`${path}.precedence must be exactly: ${expectedPrecedence.join(", ")}.`);
+  }
+  return {
+    managedFilenamePrefix: asNonEmptyString(node.managedFilenamePrefix, pathDot(path, "managedFilenamePrefix")),
+    managedFrontmatter: {
+      managedBy: asNonEmptyString(managedFrontmatterNode.managedBy, pathDot(pathDot(path, "managedFrontmatter"), "managedBy")),
+      managedLayer: asNonEmptyString(managedFrontmatterNode.managedLayer, pathDot(pathDot(path, "managedFrontmatter"), "managedLayer")),
+    },
+    precedence,
+    projectAgentsDefault: asEnum(node.projectAgentsDefault, pathDot(path, "projectAgentsDefault"), ["enabled", "disabled"] as const),
+    projectAgentsSettingPath: asNonEmptyString(node.projectAgentsSettingPath, pathDot(path, "projectAgentsSettingPath")),
+  };
 }
 
 function validateRuntimeInvariants(value: unknown, path: string): RuntimeContract["runtimeInvariants"] {

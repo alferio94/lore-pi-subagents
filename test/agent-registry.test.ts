@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { spawnSync } from "node:child_process";
 import {
   getBuiltinAgentContract,
   listBuiltinAgents,
@@ -36,6 +37,53 @@ function writeRawAgent(dir: string, fileName: string, content: string): string {
   return filePath;
 }
 
+function installManagedPiFixture(homeDir: string): void {
+  const loreCliRepo = path.resolve(import.meta.dirname, "../../lore-cli");
+  const helperDir = fs.mkdtempSync(path.join(loreCliRepo, ".tmp-runtime-e2e-"));
+  const helperPath = path.join(helperDir, "main.go");
+  fs.writeFileSync(
+    helperPath,
+    `package main
+
+import (
+  "os"
+  "path/filepath"
+  "time"
+
+  "github.com/alferio94/lore-cli/internal/install"
+)
+
+func main() {
+  homeDir := os.Args[1]
+  _, err := install.Service{}.InstallPi(install.PiInstallRequest{
+    HomeDir: homeDir,
+    ServerURL: "https://example.test",
+    LoreBinaryPath: "/usr/local/bin/lore",
+    LoreConfigDir: filepath.Join(homeDir, ".lore"),
+    LoreCLIVersion: "runtime-e2e",
+    Target: install.TargetPi,
+    Components: []install.ComponentID{install.ComponentCorePack, install.ComponentPiExtensions},
+    Now: time.Unix(1716681600, 0).UTC(),
+  })
+  if err != nil {
+    panic(err)
+  }
+}
+`,
+    "utf8",
+  );
+  try {
+    const result = spawnSync("go", ["run", helperPath, homeDir], {
+      cwd: loreCliRepo,
+      encoding: "utf8",
+      env: { ...process.env, HOME: homeDir },
+    });
+    assert.equal(result.status, 0, `go run helper failed: ${result.stderr || result.stdout}`);
+  } finally {
+    fs.rmSync(helperDir, { recursive: true, force: true });
+  }
+}
+
 test("discoverAgentRegistry merges builtin, user, and project agents with project precedence", () => {
   const root = makeTempDir();
   const userDir = path.join(root, "user");
@@ -51,6 +99,7 @@ test("discoverAgentRegistry merges builtin, user, and project agents with projec
     builtinDir: defaultBuiltinAgentDir(),
     userDir,
     projectRoot,
+    projectAgentsMode: "enabled",
   });
 
   assert.equal(registry.byName.get("lore-worker")?.description, "Project worker");
@@ -66,7 +115,11 @@ test("discoverAgentRegistry resolves builtin < managed < user < project and can 
   const managedFrontmatter = "managedBy: lore-cli\nmanagedLayer: global-overlay\nmanagedPackId: portable-agent-pack\n";
 
   writeAgent(userDir, "lore-worker", "User worker", "user body");
-  writeAgent(userDir, "lore-worker", "Managed worker", "managed body", managedFrontmatter);
+  writeRawAgent(
+    userDir,
+    "lore-managed-lore-worker.md",
+    `---\nname: lore-worker\ndescription: Managed worker\nsystemPromptMode: replace\ninheritProjectContext: false\n${managedFrontmatter}---\nmanaged body\n`,
+  );
   writeAgent(projectDir, "lore-worker", "Project worker", "project body");
 
   const projectDisabled = discoverAgentRegistry({
@@ -77,8 +130,10 @@ test("discoverAgentRegistry resolves builtin < managed < user < project and can 
     projectAgentsMode: "disabled",
   });
 
+  assert.equal(projectDisabled.projectAgentsMode, "disabled");
   assert.equal(projectDisabled.byName.get("lore-worker")?.source, "user");
   assert.equal(projectDisabled.byName.get("lore-worker")?.description, "User worker");
+  assert.deepEqual(projectDisabled.ignoredProjectAgents.map((agent) => agent.name), ["lore-worker"]);
 
   const projectEnabled = discoverAgentRegistry({
     cwd: projectRoot,
@@ -88,10 +143,155 @@ test("discoverAgentRegistry resolves builtin < managed < user < project and can 
     projectAgentsMode: "enabled",
   });
 
+  assert.equal(projectEnabled.projectAgentsMode, "enabled");
+  assert.deepEqual(projectEnabled.ignoredProjectAgents, []);
   assert.equal(projectEnabled.byName.get("lore-worker")?.source, "project");
   assert.equal(projectEnabled.byName.get("lore-worker")?.description, "Project worker");
 });
 
+test("discoverAgentRegistry defaults Lore-managed installs to disabled project agents until explicitly enabled", () => {
+  const root = makeTempDir();
+  const userDir = path.join(root, "user");
+  const projectRoot = path.join(root, "project");
+  const projectDir = path.join(projectRoot, ".pi", "agents");
+  const settingsDir = path.join(root, ".pi", "agent");
+  const settingsPath = path.join(settingsDir, "settings.json");
+
+  writeAgent(projectDir, "lore-worker", "Project worker", "project body");
+  fs.mkdirSync(settingsDir, { recursive: true });
+  fs.writeFileSync(settingsPath, JSON.stringify({
+    packages: ["git:github.com/alferio94/lore-pi-subagents"],
+  }), "utf8");
+
+  const defaultDisabled = discoverAgentRegistry({
+    cwd: projectRoot,
+    builtinDir: defaultBuiltinAgentDir(),
+    userDir,
+    projectRoot,
+    settingsPath,
+  });
+
+  assert.equal(defaultDisabled.projectAgentsMode, "disabled");
+  assert.equal(defaultDisabled.byName.get("lore-worker")?.source, "builtin");
+  assert.deepEqual(defaultDisabled.ignoredProjectAgents.map((agent) => agent.name), ["lore-worker"]);
+  assert.deepEqual(defaultDisabled.diagnostics, []);
+
+  fs.writeFileSync(settingsPath, JSON.stringify({
+    packages: ["git:github.com/alferio94/lore-pi-subagents"],
+    lore: {
+      agent_resolution: {
+        project_agents: "enabled",
+      },
+    },
+  }), "utf8");
+
+  const explicitEnabled = discoverAgentRegistry({
+    cwd: projectRoot,
+    builtinDir: defaultBuiltinAgentDir(),
+    userDir,
+    projectRoot,
+    settingsPath,
+  });
+
+  assert.equal(explicitEnabled.projectAgentsMode, "enabled");
+  assert.equal(explicitEnabled.byName.get("lore-worker")?.source, "project");
+  assert.deepEqual(explicitEnabled.ignoredProjectAgents, []);
+  assert.deepEqual(explicitEnabled.diagnostics, []);
+});
+
+test("discoverAgentRegistry warns when settings.json is malformed and falls back to contract defaults", () => {
+  const root = makeTempDir();
+  const userDir = path.join(root, "user");
+  const projectRoot = path.join(root, "project");
+  const projectDir = path.join(projectRoot, ".pi", "agents");
+  const settingsDir = path.join(root, ".pi", "agent");
+  const settingsPath = path.join(settingsDir, "settings.json");
+
+  writeAgent(projectDir, "lore-worker", "Project worker", "project body");
+  fs.mkdirSync(settingsDir, { recursive: true });
+  fs.writeFileSync(settingsPath, '{"packages":["git:github.com/alferio94/lore-pi-subagents"]', "utf8");
+
+  const registry = discoverAgentRegistry({
+    cwd: projectRoot,
+    builtinDir: defaultBuiltinAgentDir(),
+    userDir,
+    projectRoot,
+    settingsPath,
+  });
+
+  assert.equal(registry.projectAgentsMode, "enabled");
+  assert.equal(registry.byName.get("lore-worker")?.source, "project");
+  assert.deepEqual(registry.ignoredProjectAgents, []);
+  assert.deepEqual(registry.diagnostics, [{
+    level: "warning",
+    code: "settings-json-invalid",
+    path: settingsPath,
+    message: `Could not parse '${settingsPath}'; falling back to runtime contract defaults.`,
+  }]);
+});
+
+test("discoverAgentRegistry warns when settings.json is unreadable and falls back to contract defaults", () => {
+  const root = makeTempDir();
+  const userDir = path.join(root, "user");
+  const projectRoot = path.join(root, "project");
+  const projectDir = path.join(projectRoot, ".pi", "agents");
+  const settingsDir = path.join(root, ".pi", "agent");
+  const settingsPath = path.join(settingsDir, "settings.json");
+
+  writeAgent(projectDir, "lore-worker", "Project worker", "project body");
+  fs.mkdirSync(settingsPath, { recursive: true });
+
+  const registry = discoverAgentRegistry({
+    cwd: projectRoot,
+    builtinDir: defaultBuiltinAgentDir(),
+    userDir,
+    projectRoot,
+    settingsPath,
+  });
+
+  assert.equal(registry.projectAgentsMode, "enabled");
+  assert.equal(registry.byName.get("lore-worker")?.source, "project");
+  assert.deepEqual(registry.ignoredProjectAgents, []);
+  assert.deepEqual(registry.diagnostics, [{
+    level: "warning",
+    code: "settings-json-unreadable",
+    path: settingsPath,
+    message: `Could not read '${settingsPath}'; falling back to runtime contract defaults.`,
+  }]);
+});
+
+test("discoverAgentRegistry consumes lore-cli managed install output with managed beating builtin and user beating managed", () => {
+  const root = makeTempDir();
+  const homeDir = path.join(root, "home");
+  const projectRoot = path.join(root, "project");
+  const userDir = path.join(homeDir, ".pi", "agent", "agents");
+
+  fs.mkdirSync(projectRoot, { recursive: true });
+  installManagedPiFixture(homeDir);
+
+  const managedRegistry = discoverAgentRegistry({
+    cwd: projectRoot,
+    builtinDir: defaultBuiltinAgentDir(),
+    userDir,
+    projectRoot,
+    settingsPath: path.join(homeDir, ".pi", "agent", "settings.json"),
+  });
+
+  assert.equal(managedRegistry.byName.get("lore-worker")?.source, "managed");
+  assert.match(managedRegistry.byName.get("lore-worker")?.body ?? "", /canonical lore repository worker/i);
+
+  writeAgent(userDir, "lore-worker", "User worker", "user body");
+  const userWinningRegistry = discoverAgentRegistry({
+    cwd: projectRoot,
+    builtinDir: defaultBuiltinAgentDir(),
+    userDir,
+    projectRoot,
+    settingsPath: path.join(homeDir, ".pi", "agent", "settings.json"),
+  });
+
+  assert.equal(userWinningRegistry.byName.get("lore-worker")?.source, "user");
+  assert.equal(userWinningRegistry.byName.get("lore-worker")?.description, "User worker");
+});
 
 test("parseAgentDefinition classifies Lore managed overlay frontmatter separately from user overrides", () => {
   const root = makeTempDir();

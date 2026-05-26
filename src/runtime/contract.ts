@@ -68,3 +68,7 @@ export function getEntrypoint(contract = getRuntimeContract()): RuntimeContract[
 export function getRuntimeInvariants(contract = getRuntimeContract()): RuntimeContract["runtimeInvariants"] {
   return contract.runtimeInvariants;
 }
+
+export function getAgentResolution(contract = getRuntimeContract()): RuntimeContract["agentResolution"] {
+  return contract.agentResolution;
+}

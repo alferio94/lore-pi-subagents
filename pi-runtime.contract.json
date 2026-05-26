@@ -164,6 +164,16 @@
       }
     ]
   },
+  "agentResolution": {
+    "managedFilenamePrefix": "lore-managed-",
+    "managedFrontmatter": {
+      "managedBy": "lore-cli",
+      "managedLayer": "global-overlay"
+    },
+    "precedence": ["builtin", "managed", "user", "project"],
+    "projectAgentsDefault": "enabled",
+    "projectAgentsSettingPath": "lore.agent_resolution.project_agents"
+  },
   "runtimeInvariants": {
     "projectOverridesBuiltinPrompts": true,
     "strictEnvelopes": {

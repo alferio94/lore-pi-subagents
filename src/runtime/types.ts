@@ -5,7 +5,8 @@ import type {
   SkillPolicy,
 } from "./contract-schema.ts";
 
-export type AgentSource = "builtin" | "user" | "project";
+export type AgentSource = "builtin" | "managed" | "user" | "project";
+export type ProjectAgentsMode = "enabled" | "disabled";
 export type SystemPromptMode = "append" | "replace";
 export type FrontmatterPrimitive = string | number | boolean | null;
 export type FrontmatterValue = FrontmatterPrimitive | FrontmatterPrimitive[];
@@ -42,6 +43,13 @@ export interface AgentDefinition {
   contractFrontmatter?: AgentContractFrontmatter;
 }
 
+export interface AgentRegistryDiagnostic {
+  level: "warning";
+  code: "settings-json-invalid" | "settings-json-unreadable";
+  path: string;
+  message: string;
+}
+
 export interface AgentRegistry {
   agents: AgentDefinition[];
   byName: Map<string, AgentDefinition>;
@@ -49,6 +57,9 @@ export interface AgentRegistry {
   userDir: string;
   projectDir?: string;
   projectRoot?: string;
+  projectAgentsMode: ProjectAgentsMode;
+  ignoredProjectAgents: AgentDefinition[];
+  diagnostics: AgentRegistryDiagnostic[];
 }
 
 export interface DiscoverAgentsOptions {
@@ -56,4 +67,6 @@ export interface DiscoverAgentsOptions {
   builtinDir?: string;
   userDir?: string;
   projectRoot?: string;
+  projectAgentsMode?: ProjectAgentsMode;
+  settingsPath?: string;
 }

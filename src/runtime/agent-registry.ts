@@ -1,16 +1,24 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { getBuiltinAgentContract, listBuiltinAgents } from "./contract.ts";
-import { PROJECT_AGENT_DIRNAME, USER_AGENT_DIR } from "./constants.ts";
+import { getAgentResolution, getBuiltinAgentContract, getSourceLocator, listBuiltinAgents } from "./contract.ts";
+import {
+  MANAGED_AGENT_SETTING_DISABLED,
+  MANAGED_AGENT_SETTING_ENABLED,
+  PI_AGENT_SETTINGS_PATH,
+  PROJECT_AGENT_DIRNAME,
+  USER_AGENT_DIR,
+} from "./constants.ts";
 import { parseFrontmatter } from "./frontmatter.ts";
 import type {
   AgentContractFrontmatter,
   AgentDefinition,
   AgentRegistry,
+  AgentRegistryDiagnostic,
   AgentSource,
   DiscoverAgentsOptions,
   FrontmatterValue,
+  ProjectAgentsMode,
   SystemPromptMode,
 } from "./types.ts";
 import type { BuiltinAgentContract, ContractEnvelope, ContractPhase, ContractRole, SkillPolicy } from "./contract-schema.ts";
@@ -45,11 +53,13 @@ export function discoverAgentRegistry(options: DiscoverAgentsOptions = {}): Agen
   const userDir = path.resolve(options.userDir ?? USER_AGENT_DIR);
   const projectRoot = options.projectRoot ? path.resolve(options.projectRoot) : findNearestProjectRoot(cwd);
   const projectDir = projectRoot ? path.join(projectRoot, PROJECT_AGENT_DIRNAME) : undefined;
+  const { mode: projectAgentsMode, diagnostics } = resolveProjectAgentsMode(options);
+  const ignoredProjectAgents = projectAgentsMode === "disabled" ? loadAgentDefinitions(projectDir, "project") : [];
 
   const agents = mergeAgentDefinitions([
     ...loadAgentDefinitions(builtinDir, "builtin"),
     ...loadAgentDefinitions(userDir, "user"),
-    ...loadAgentDefinitions(projectDir, "project"),
+    ...(projectAgentsMode === "enabled" ? loadAgentDefinitions(projectDir, "project") : []),
   ]);
 
   return {
@@ -59,6 +69,9 @@ export function discoverAgentRegistry(options: DiscoverAgentsOptions = {}): Agen
     userDir,
     projectDir,
     projectRoot,
+    projectAgentsMode,
+    ignoredProjectAgents,
+    diagnostics,
   };
 }
 
@@ -117,6 +130,7 @@ export function parseAgentDefinition(
   const tools = asStringArray(data.tools);
   const model = asOptionalString(data.model);
   const thinking = asOptionalString(data.thinking);
+  const metadata = readManagedMetadata(data);
   const contractFrontmatter = readContractFrontmatter(data, filePath);
 
   const unsupportedFields = Object.keys(data).filter((key) => !KNOWN_AGENT_FIELDS.has(key));
@@ -137,6 +151,8 @@ export function parseAgentDefinition(
     validateBuiltinAgentParity(filePath, name, options.builtinDir, builtinContract, contractFrontmatter);
   }
 
+  const resolvedSource = source === "user" && isManagedOverlayMetadata(metadata) ? "managed" : source;
+
   return {
     name,
     description,
@@ -146,9 +162,9 @@ export function parseAgentDefinition(
     systemPromptMode,
     inheritProjectContext,
     body,
-    source,
+    source: resolvedSource,
     filePath,
-    metadata: {},
+    metadata,
     ...(contractFrontmatter ? { contractFrontmatter } : {}),
     ...(builtinContract ? {
       role: builtinContract.role,
@@ -160,7 +176,7 @@ export function parseAgentDefinition(
 }
 
 export function mergeAgentDefinitions(agents: AgentDefinition[]): AgentDefinition[] {
-  const order: AgentSource[] = ["builtin", "user", "project"];
+  const order: AgentSource[] = ["builtin", "managed", "user", "project"];
   const sorted = [...agents].sort((left, right) => {
     const sourceDelta = order.indexOf(left.source) - order.indexOf(right.source);
     if (sourceDelta !== 0) return sourceDelta;
@@ -188,7 +204,26 @@ const KNOWN_AGENT_FIELDS = new Set([
   "requiredEnvelope",
   "skillPolicyMode",
   "skillPolicyFiles",
+  "managedBy",
+  "managedLayer",
+  "managedPackId",
 ]);
+
+function isManagedOverlayMetadata(metadata: Record<string, FrontmatterValue>): boolean {
+  const agentResolution = getAgentResolution();
+  return metadata.managedBy === agentResolution.managedFrontmatter.managedBy
+    && metadata.managedLayer === agentResolution.managedFrontmatter.managedLayer;
+}
+
+function readManagedMetadata(data: Record<string, FrontmatterValue>): Record<string, FrontmatterValue> {
+  const metadata: Record<string, FrontmatterValue> = {};
+  for (const key of ["managedBy", "managedLayer", "managedPackId"] as const) {
+    if (data[key] !== undefined) {
+      metadata[key] = data[key];
+    }
+  }
+  return metadata;
+}
 
 function validateBuiltinAgentParity(
   filePath: string,
@@ -309,6 +344,93 @@ function readSkillPolicyFromFrontmatter(
   return { mode: contractFrontmatter.skillPolicyMode };
 }
 
+function resolveProjectAgentsMode(options: DiscoverAgentsOptions): { mode: ProjectAgentsMode; diagnostics: AgentRegistryDiagnostic[] } {
+  if (options.projectAgentsMode) {
+    return { mode: options.projectAgentsMode, diagnostics: [] };
+  }
+
+  const settingsResult = readSettingsJson(options.settingsPath ? path.resolve(options.settingsPath) : PI_AGENT_SETTINGS_PATH);
+  const explicitMode = readProjectAgentsModeSetting(settingsResult.settings);
+  if (explicitMode) {
+    return { mode: explicitMode, diagnostics: settingsResult.diagnostics };
+  }
+
+  if (hasLoreManagedPackage(settingsResult.settings)) {
+    return { mode: MANAGED_AGENT_SETTING_DISABLED, diagnostics: settingsResult.diagnostics };
+  }
+
+  return { mode: getAgentResolution().projectAgentsDefault, diagnostics: settingsResult.diagnostics };
+}
+
+function readSettingsJson(settingsPath: string): { settings: unknown; diagnostics: AgentRegistryDiagnostic[] } {
+  if (!fs.existsSync(settingsPath)) {
+    return { settings: undefined, diagnostics: [] };
+  }
+
+  let raw: string;
+  try {
+    raw = fs.readFileSync(settingsPath, "utf8");
+  } catch {
+    return {
+      settings: undefined,
+      diagnostics: [buildSettingsDiagnostic("settings-json-unreadable", settingsPath)],
+    };
+  }
+
+  try {
+    return {
+      settings: JSON.parse(raw) as unknown,
+      diagnostics: [],
+    };
+  } catch {
+    return {
+      settings: undefined,
+      diagnostics: [buildSettingsDiagnostic("settings-json-invalid", settingsPath)],
+    };
+  }
+}
+
+function buildSettingsDiagnostic(
+  code: AgentRegistryDiagnostic["code"],
+  settingsPath: string,
+): AgentRegistryDiagnostic {
+  const verb = code === "settings-json-invalid" ? "parse" : "read";
+  return {
+    level: "warning",
+    code,
+    path: settingsPath,
+    message: `Could not ${verb} '${settingsPath}'; falling back to runtime contract defaults.`,
+  };
+}
+
+function readProjectAgentsModeSetting(settings: unknown): ProjectAgentsMode | undefined {
+  const node = getNestedValue(settings, getAgentResolution().projectAgentsSettingPath.split("."));
+  if (node === MANAGED_AGENT_SETTING_ENABLED || node === MANAGED_AGENT_SETTING_DISABLED) {
+    return node;
+  }
+  return undefined;
+}
+
+function hasLoreManagedPackage(settings: unknown): boolean {
+  if (!settings || typeof settings !== "object") {
+    return false;
+  }
+
+  const packages = (settings as { packages?: unknown }).packages;
+  return Array.isArray(packages) && packages.includes(getSourceLocator().value);
+}
+
+function getNestedValue(input: unknown, keys: string[]): unknown {
+  let current = input;
+  for (const key of keys) {
+    if (!current || typeof current !== "object" || !(key in current)) {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current;
+}
+
 function normalizeRelativePromptFile(value: string): string {
   return value.replaceAll(path.sep, "/");
 }
@@ -354,6 +476,9 @@ function asOptionalRole(value: FrontmatterValue | undefined, filePath: string): 
 
 function asOptionalPhase(value: FrontmatterValue | undefined, filePath: string): ContractPhase | undefined {
   if (value === undefined) return undefined;
+  if (value === "proposal") {
+    return "propose";
+  }
   if (value === "init" || value === "explore" || value === "propose" || value === "spec" || value === "design" || value === "tasks" || value === "apply" || value === "verify" || value === "archive") {
     return value;
   }
