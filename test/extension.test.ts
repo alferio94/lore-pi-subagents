@@ -134,7 +134,7 @@ test("lore-models command lists available Pi models from the model registry", as
 
       const selections = [
         "Agent routes (10)",
-        "lore-worker: inherit",
+        "lore-worker: default non-SDD (inherit)",
         "openai-codex/gpt-5.5",
         "Inherit thinking (current)",
         "Save (model=openai-codex/gpt-5.5)",

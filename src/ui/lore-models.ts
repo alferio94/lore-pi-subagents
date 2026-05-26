@@ -1,5 +1,6 @@
 import {
   formatModelRoute,
+  isSddAgent,
   normalizeModelRoute,
   readModelRoutingConfig,
   type LoreModelRoutingConfig,
@@ -167,12 +168,22 @@ async function chooseAgentTarget(
   config: LoreModelRoutingConfig,
   agentNames: string[],
 ): Promise<RouteTarget | null> {
-  const items = agentNames.map((agentName) => ({
-    kind: "agent" as const,
-    agentName,
-    label: `${agentName}: ${formatModelRoute(config.agents[agentName])}`,
-    description: formatModelRoute(config.agents[agentName]),
-  }));
+  const items = agentNames.map((agentName) => {
+    const route = config.agents[agentName];
+    const defaultKind = isSddAgent(agentName) ? "sdd" : "nonSdd";
+    const defaultLabel = defaultKind === "sdd" ? "SDD" : "non-SDD";
+    const hasOverride = Boolean(normalizeModelRoute(route));
+    return {
+      kind: "agent" as const,
+      agentName,
+      label: hasOverride
+        ? `${agentName}: ${formatModelRoute(route)}`
+        : `${agentName}: default ${defaultLabel} (${formatModelRoute(config.defaults[defaultKind])})`,
+      description: hasOverride
+        ? `Explicit override; otherwise this agent uses the default ${defaultLabel} route`
+        : `No override; uses the default ${defaultLabel} route`,
+    };
+  });
 
   const selectedValue = await chooseMenuItem(ctx, AGENTS_LABEL, [
     ...items.map((item) => ({ value: item.label, label: item.label, description: item.description })),
@@ -492,12 +503,43 @@ function borderLine(
 
 function padLine(text: string, width: number): string {
   const clean = truncateToWidth(text, width);
-  const padding = Math.max(0, width - clean.length);
+  const padding = Math.max(0, width - visibleWidth(clean));
   return clean + " ".repeat(padding);
 }
 
 function truncateToWidth(text: string, width: number): string {
-  return text.length <= width ? text : `${text.slice(0, Math.max(0, width - 1))}…`;
+  if (visibleWidth(text) <= width) {
+    return text;
+  }
+
+  const targetWidth = Math.max(0, width - 1);
+  let currentWidth = 0;
+  let output = "";
+  for (let index = 0; index < text.length;) {
+    const ansiMatch = /^\u001b\[[0-?]*[ -/]*[@-~]/.exec(text.slice(index));
+    if (ansiMatch) {
+      output += ansiMatch[0];
+      index += ansiMatch[0].length;
+      continue;
+    }
+
+    const char = text[index];
+    if (!char) {
+      break;
+    }
+    if (currentWidth + 1 > targetWidth) {
+      break;
+    }
+    output += char;
+    currentWidth += 1;
+    index += char.length;
+  }
+  const reset = /\u001b\[/.test(output) ? "\u001b[0m" : "";
+  return `${output}${reset}…`;
+}
+
+function visibleWidth(text: string): number {
+  return text.replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/g, "").length;
 }
 
 function color(theme: { fg(color: string, text: string): string }, colorName: string, text: string): string {

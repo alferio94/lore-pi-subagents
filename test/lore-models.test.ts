@@ -11,10 +11,14 @@ function makeConfig(): LoreModelRoutingConfig {
   };
 }
 
+function stripAnsi(value: string): string {
+  return value.replaceAll(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
 test("openLoreModelsUI uses route -> model -> thinking -> save flow for agent routes", async () => {
   const selections = [
     "Agent routes (2)",
-    "lore-worker: inherit",
+    "lore-worker: default non-SDD (inherit)",
     "openai/gpt-5",
     "medium",
     "Save (model=openai/gpt-5, thinking=medium)",
@@ -79,6 +83,44 @@ test("openLoreModelsUI allows backing out without saving", async () => {
   assert.deepEqual(result, makeConfig());
 });
 
+test("openLoreModelsUI shows inherited agent routes as matching defaults", async () => {
+  const customSelections = ["Agent routes (2)", "Back", "Done"];
+  const agentLines: string[] = [];
+
+  await openLoreModelsUI({
+    ui: {
+      async select(_title, items) {
+        const next = customSelections.shift();
+        assert.ok(next, `unexpected select items: ${items.join(", ")}`);
+        assert.ok(items.includes(next), `selection ${next} missing from ${items.join(", ")}`);
+        if (_title === "Agent routes") {
+          agentLines.push(...items);
+        }
+        return next;
+      },
+      async input() {
+        throw new Error("manual input not expected");
+      },
+      notify() {},
+    },
+  }, {
+    availableModels: [],
+    agentNames: ["lore-worker", "sdd-apply"],
+    readConfig: async () => ({
+      version: 1,
+      defaults: {
+        nonSdd: { model: "openai/gpt-5", thinking: "medium" },
+        sdd: { model: "openai/gpt-5", thinking: "high" },
+      },
+      agents: {},
+    }),
+    writeConfig: async (config) => config,
+  });
+
+  assert.ok(agentLines.includes("lore-worker: default non-SDD (model=openai/gpt-5, thinking=medium)"));
+  assert.ok(agentLines.includes("sdd-apply: default SDD (model=openai/gpt-5, thinking=high)"));
+});
+
 test("openLoreModelsUI prefers the centered custom overlay when available", async () => {
   const customSelections = ["Done"];
   const overlayCalls: Array<{ lines: string[]; options: unknown }> = [];
@@ -138,4 +180,61 @@ test("openLoreModelsUI prefers the centered custom overlay when available", asyn
       margin: 1,
     },
   });
+});
+
+test("openLoreModelsUI keeps colored custom overlay borders aligned", async () => {
+  const overlayLines: string[][] = [];
+
+  await openLoreModelsUI({
+    ui: {
+      async select() {
+        return null;
+      },
+      async input() {
+        throw new Error("manual input not expected");
+      },
+      notify() {},
+      async custom<T>(
+        factory: (
+          tui: { requestRender(): void },
+          theme: { fg(color: string, text: string): string; bold(text: string): string },
+          keybindings: unknown,
+          done: (value: T) => void,
+        ) => { render(width: number): string[]; handleInput(data: string): void; invalidate?(): void },
+      ) {
+        const renderer = factory(
+          { requestRender() {} },
+          {
+            fg(color: string, text: string) { return `\u001b[3${color.length % 8}m${text}\u001b[0m`; },
+            bold(text: string) { return `\u001b[1m${text}\u001b[22m`; },
+          },
+          null,
+          (() => {}) as (value: T) => void,
+        );
+        overlayLines.push(renderer.render(42));
+        return "Done" as T;
+      },
+    },
+  }, {
+    availableModels: [],
+    agentNames: [],
+    readConfig: async () => ({
+      version: 1,
+      defaults: {
+        nonSdd: { model: "openai-codex/gpt-5.4", thinking: "medium" },
+        sdd: { model: "openai-codex/gpt-5.4", thinking: "medium" },
+      },
+      agents: {},
+    }),
+    writeConfig: async (config) => config,
+  });
+
+  assert.equal(overlayLines.length, 1);
+  const visibleLines = overlayLines[0].map(stripAnsi);
+  const width = visibleLines[0].length;
+  assert.ok(width > 0);
+  for (const line of visibleLines) {
+    assert.equal(line.length, width, line);
+    assert.match(line, /^[╭│╰].*[╮│╯]$/);
+  }
 });
