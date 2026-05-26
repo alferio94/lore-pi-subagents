@@ -35,12 +35,17 @@ interface AvailableModelDescriptor {
 interface ToolExecuteContext {
   ui?: {
     notify?: (message: string, level?: "info" | "warning" | "error") => void;
+    setStatus?: (key: string, text: string | undefined) => void;
   };
 }
 
 interface SendMessageCapablePi {
   sendMessage?: (message: { customType: string; display: boolean; content: string; details?: Record<string, unknown> }, options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" }) => void;
 }
+
+type SubagentState = "running" | "completed" | "error";
+
+const subagentStates = new Map<string, SubagentState>();
 
 const DELEGATE_PARAMETERS = {
   type: "object",
@@ -106,12 +111,17 @@ export default function lorePiRuntime(pi: ExtensionAPI): void {
             runInBackground: params.async === true,
             onBackgroundFinish: params.async === true
               ? (event) => {
+                  updateSubagentStatus(ctx, event.delegationId, event.status === "completed" ? "completed" : "error");
                   const level = event.status === "completed" ? "info" : event.status === "needs_user_input" ? "warning" : "error";
                   ctx?.ui?.notify?.(formatBackgroundNotification(event), level);
                   sendBackgroundCompletionMessage(pi, event);
                 }
               : undefined,
           });
+
+          if (params.async === true) {
+            updateSubagentStatus(ctx, started.record.id, "running");
+          }
 
           const status = started.recovery.status?.status ?? started.record.status;
           const summary = started.recovery.status?.summary ?? `${started.record.canonicalAgent} started.`;
@@ -349,6 +359,26 @@ function formatDelegationReadText(run: ReturnType<typeof readDelegation>): strin
   }
 
   return lines.join("\n");
+}
+
+function updateSubagentStatus(ctx: ToolExecuteContext | undefined, delegationId: string, status: SubagentState): void {
+  subagentStates.set(delegationId, status);
+
+  let running = 0;
+  let completed = 0;
+  let error = 0;
+
+  for (const value of subagentStates.values()) {
+    if (value === "running") {
+      running += 1;
+    } else if (value === "completed") {
+      completed += 1;
+    } else {
+      error += 1;
+    }
+  }
+
+  ctx?.ui?.setStatus?.("subagents", `subagents ${running}⏳ ${completed}✓ ${error}✗`);
 }
 
 function sendBackgroundCompletionMessage(pi: ExtensionAPI, event: BackgroundDelegationEvent): void {
