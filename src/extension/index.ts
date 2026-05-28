@@ -34,6 +34,9 @@ interface AvailableModelDescriptor {
 }
 
 interface ToolExecuteContext {
+  sessionManager?: {
+    getSessionId(): string;
+  };
   ui?: {
     notify?: (message: string, level?: "info" | "warning" | "error") => void;
     setStatus?: (key: string, text: string | undefined) => void;
@@ -117,6 +120,7 @@ export default function lorePiRuntime(pi: ExtensionAPI): void {
             requestedAgent: typeof params.agent === "string" ? params.agent : undefined,
             task: String(params.task),
             cwd: typeof params.cwd === "string" ? params.cwd : undefined,
+            sessionId: ctx?.sessionManager?.getSessionId(),
             runInBackground: params.async === true,
             onBackgroundFinish: params.async === true
               ? (event) => {

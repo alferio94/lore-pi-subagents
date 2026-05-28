@@ -8,6 +8,7 @@ import {
   expandAgentTools,
   finalizeChildRun,
   getDelegationRuntimePolicy,
+  listDelegations,
   LORE_MEMORY_TOOLS,
   readDelegation,
 } from "../src/runtime/delegations.ts";
@@ -116,6 +117,88 @@ test("finalizeChildRun persists failed output when completion rejects", async ()
   assert.equal(recovered.result?.envelope?.status, "failed");
   assert.match(recovered.rawOutput ?? "", /failed before producing a final envelope/i);
   assert.match(recovered.stderr ?? "", /spawn ENOENT/);
+});
+
+test("listDelegations filters by sessionId without breaking unfiltered results", async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "lore-pi-runtime-delegation-"));
+  const previousRoot = process.env.LORE_PI_RUNTIME_RUN_ROOT;
+  process.env.LORE_PI_RUNTIME_RUN_ROOT = rootDir;
+
+  try {
+    const first = createRunRecord({
+      rootDir,
+      delegationId: "dg-11111111",
+      requestedAgent: "lore-worker",
+      canonicalAgent: "lore-worker",
+      cwd: "/repo",
+      sessionId: "session-a",
+    });
+    const second = createRunRecord({
+      rootDir,
+      delegationId: "dg-22222222",
+      requestedAgent: "lore-worker",
+      canonicalAgent: "lore-worker",
+      cwd: "/repo",
+      sessionId: "session-b",
+    });
+    const legacy = createRunRecord({
+      rootDir,
+      delegationId: "dg-33333333",
+      requestedAgent: "lore-worker",
+      canonicalAgent: "lore-worker",
+      cwd: "/repo",
+    });
+
+    await finalizeChildRun(first, Readable.from([JSON.stringify({
+      status: "completed",
+      summary: "first",
+      artifacts: [],
+      files: [],
+      validations: [],
+      next_step: null,
+      continuation: null,
+      question: null,
+      options: [],
+      risks: [],
+      skill_resolution: "none",
+    })]), Readable.from([]), Promise.resolve(0));
+    await finalizeChildRun(second, Readable.from([JSON.stringify({
+      status: "completed",
+      summary: "second",
+      artifacts: [],
+      files: [],
+      validations: [],
+      next_step: null,
+      continuation: null,
+      question: null,
+      options: [],
+      risks: [],
+      skill_resolution: "none",
+    })]), Readable.from([]), Promise.resolve(0));
+    await finalizeChildRun(legacy, Readable.from([JSON.stringify({
+      status: "completed",
+      summary: "legacy",
+      artifacts: [],
+      files: [],
+      validations: [],
+      next_step: null,
+      continuation: null,
+      question: null,
+      options: [],
+      risks: [],
+      skill_resolution: "none",
+    })]), Readable.from([]), Promise.resolve(0));
+
+    assert.deepEqual(listDelegations(undefined, undefined, "session-a").map((run) => run.id), ["dg-11111111"]);
+    assert.deepEqual(listDelegations(undefined, undefined, "session-b").map((run) => run.id), ["dg-22222222"]);
+    assert.deepEqual(listDelegations().map((run) => run.id).sort(), ["dg-11111111", "dg-22222222", "dg-33333333"]);
+  } finally {
+    if (previousRoot === undefined) {
+      delete process.env.LORE_PI_RUNTIME_RUN_ROOT;
+    } else {
+      process.env.LORE_PI_RUNTIME_RUN_ROOT = previousRoot;
+    }
+  }
 });
 
 test("readDelegation rejects uppercase delegation ids", () => {

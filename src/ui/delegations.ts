@@ -7,6 +7,9 @@ export const DELEGATION_TRACE_FILE = "trace.jsonl";
 
 export interface DelegationViewerContext {
   hasUI?: boolean;
+  sessionManager?: {
+    getSessionId(): string;
+  };
   ui: {
     select(title: string, items: string[]): Promise<string | null | undefined>;
     notify(message: string, level?: "info" | "warning" | "error"): void;
@@ -39,7 +42,7 @@ export interface DelegationViewerContext {
 }
 
 export interface DelegationViewerOptions {
-  listDelegations: (status?: string, limit?: number) => ListedDelegation[];
+  listDelegations: (status?: string, limit?: number, sessionId?: string) => ListedDelegation[];
   readDelegation: typeof readDelegation;
 }
 
@@ -73,7 +76,10 @@ export async function openDelegationViewer(
 ): Promise<void> {
   if (ctx.hasUI === false) return;
 
-  const items = buildDelegationListItems(options.listDelegations(undefined, 100), options.readDelegation);
+  const items = buildDelegationListItems(
+    options.listDelegations(undefined, 100, ctx.sessionManager?.getSessionId()),
+    options.readDelegation,
+  );
   if (items.length === 0) {
     ctx.ui.notify("No delegations found.", "info");
     return;

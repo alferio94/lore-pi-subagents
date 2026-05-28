@@ -18,11 +18,16 @@ test("createRunRecord creates atomic record and running status files", () => {
     canonicalAgent: "lore-worker",
     cwd: "/repo",
     modelRef: "gpt-5",
+    sessionId: "session-123",
   });
 
   assert.equal(record.status, "running");
+  assert.equal(record.sessionId, "session-123");
   assert.equal(fs.existsSync(record.files.record), true);
   assert.equal(fs.existsSync(record.files.status), true);
+
+  const stored = JSON.parse(fs.readFileSync(record.files.record, "utf8")) as { sessionId?: string };
+  assert.equal(stored.sessionId, "session-123");
 });
 
 test("storeRunOutput persists parsed SDD envelopes and updates run status", () => {

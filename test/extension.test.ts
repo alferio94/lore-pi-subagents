@@ -312,15 +312,25 @@ test("delegate runs a child, then delegation_read and delegation_list recover th
       assert.ok(read);
       assert.ok(list);
 
-      const delegated = (await delegate.execute("tool-1", {
-        agent: "lore-worker",
-        task: "Inspect the repo.",
-        cwd: homeDir,
-      })) as { details: { id: string; status: string; envelope: { summary: string } } };
+      const delegated = (await delegate.execute(
+        "tool-1",
+        {
+          agent: "lore-worker",
+          task: "Inspect the repo.",
+          cwd: homeDir,
+        },
+        undefined,
+        undefined,
+        { sessionManager: { getSessionId: () => "session-123" } },
+      )) as { details: { id: string; status: string; envelope: { summary: string } } };
 
       assert.match(delegated.details.id, /^dg-/);
       assert.equal(delegated.details.status, "completed");
       assert.equal(delegated.details.envelope.summary, "Child finished.");
+
+      const recordPath = path.join(runRoot, delegated.details.id, "record.json");
+      const storedRecord = JSON.parse(fs.readFileSync(recordPath, "utf8")) as { sessionId?: string };
+      assert.equal(storedRecord.sessionId, "session-123");
 
       const readBack = (await read.execute("tool-2", { id: delegated.details.id })) as {
         content: Array<{ text: string }>;
@@ -426,6 +436,78 @@ test("delegate persists needs_user_input envelopes without widening child runtim
       assert.equal(delegated.details.status, "needs_user_input");
       assert.equal(delegated.details.envelope.question, "Ship it?");
       assert.deepEqual(delegated.details.envelope.options, ["yes", "no"]);
+    },
+  );
+});
+
+test("ctrl+space viewer lists only delegations from the current session", async () => {
+  const homeDir = makeTempDir();
+  const runRoot = path.join(homeDir, "runs");
+  const fakePi = writeFakePi(homeDir, {
+    status: "completed",
+    summary: "Child finished.",
+    artifacts: [],
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
+    question: null,
+    options: [],
+    risks: [],
+    skill_resolution: "none",
+  });
+
+  await withEnv(
+    {
+      HOME: homeDir,
+      LORE_PI_RUNTIME_RUN_ROOT: runRoot,
+      LORE_PI_RUNTIME_MODELS_PATH: path.join(homeDir, "models.json"),
+      LORE_PI_RUNTIME_PI_COMMAND: fakePi,
+      LORE_PI_CHILD: undefined,
+      LORE_PI_RUN_DIR: undefined,
+      LORE_PI_DELEGATION_DEPTH: undefined,
+    },
+    async () => {
+      const fake = makeFakePi();
+      runtimeExtension(fake.api as never);
+      const delegate = fake.tools.get(DELEGATE_TOOL_NAME);
+      const shortcut = fake.shortcuts.find((candidate) => candidate.shortcut === "ctrl+space");
+      assert.ok(delegate);
+      assert.ok(shortcut?.definition.handler);
+
+      const runWithSession = await delegate.execute(
+        "tool-session-a",
+        { agent: "lore-worker", task: "Inspect the repo.", cwd: homeDir },
+        undefined,
+        undefined,
+        { sessionManager: { getSessionId: () => "session-a" } },
+      ) as { details: { id: string } };
+      await delegate.execute(
+        "tool-session-b",
+        { agent: "lore-worker", task: "Inspect the repo.", cwd: homeDir },
+        undefined,
+        undefined,
+        { sessionManager: { getSessionId: () => "session-b" } },
+      );
+
+      const selections: Array<{ title: string; items: string[] }> = [];
+      await shortcut.definition.handler({
+        hasUI: true,
+        sessionManager: { getSessionId: () => "session-a" },
+        ui: {
+          async select(title: string, items: string[]) {
+            selections.push({ title, items });
+            return items[0] ?? null;
+          },
+          notify() {},
+        },
+      });
+
+      assert.equal(selections.length, 2);
+      assert.equal(selections[0].title, "Subagents");
+      assert.equal(selections[0].items.length, 1);
+      assert.match(selections[0].items[0], new RegExp(runWithSession.details.id));
+      assert.equal(selections[1].title, `Delegation ${runWithSession.details.id}`);
     },
   );
 });

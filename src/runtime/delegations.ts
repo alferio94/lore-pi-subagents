@@ -35,6 +35,7 @@ export interface StartDelegationInput {
   requestedAgent?: string;
   task: string;
   cwd?: string;
+  sessionId?: string;
   runInBackground?: boolean;
   onBackgroundFinish?: (event: BackgroundDelegationEvent) => void;
 }
@@ -101,6 +102,7 @@ export async function startDelegation(input: StartDelegationInput): Promise<Star
     canonicalAgent: agent.name,
     cwd,
     modelRef: route.model,
+    sessionId: input.sessionId,
   });
 
   const childPolicy = getDelegationRuntimePolicy();
@@ -140,7 +142,7 @@ export async function startDelegation(input: StartDelegationInput): Promise<Star
   };
 }
 
-export function listDelegations(status?: string, limit?: number): ListedDelegation[] {
+export function listDelegations(status?: string, limit?: number, sessionId?: string): ListedDelegation[] {
   const rootDir = path.resolve(process.env[DELEGATIONS_ROOT_ENV] ?? DEFAULT_DELEGATIONS_ROOT);
   if (!fs.existsSync(rootDir)) {
     return [];
@@ -151,6 +153,7 @@ export function listDelegations(status?: string, limit?: number): ListedDelegati
     .filter((entry) => entry.isDirectory() && isValidDelegationId(entry.name))
     .map((entry) => recoverRun(resolveDelegationRunDir(rootDir, entry.name)))
     .filter((run) => !status || run.status?.status === status)
+    .filter((run) => !sessionId || run.record.sessionId === sessionId)
     .map((run) => ({
       id: run.record.id,
       agent: formatListedAgent(run.record.requestedAgent, run.record.canonicalAgent),

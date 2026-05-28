@@ -10,6 +10,7 @@ export interface CreateRunRecordInput {
   canonicalAgent: string;
   cwd: string;
   modelRef?: string;
+  sessionId?: string;
 }
 
 export interface RunRecord {
@@ -18,6 +19,7 @@ export interface RunRecord {
   canonicalAgent: string;
   cwd: string;
   modelRef: string | null;
+  sessionId?: string;
   startedAt: string;
   updatedAt: string;
   status: RunStatus;
@@ -74,6 +76,7 @@ export function createRunRecord(input: CreateRunRecordInput): RunRecord {
     canonicalAgent: input.canonicalAgent,
     cwd: input.cwd,
     modelRef: input.modelRef ?? null,
+    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
     startedAt: timestamp,
     updatedAt: timestamp,
     status: "running",
