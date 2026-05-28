@@ -382,10 +382,35 @@ async function appendChildTrace(type: string, details: Record<string, unknown> =
 
 function compactJson(value: unknown, max = 1000): string {
   try {
-    return compactText(JSON.stringify(value), max);
+    return compactText(JSON.stringify(compactValue(value)), max);
   } catch {
     return compactText(String(value), max);
   }
+}
+
+function compactValue(value: unknown, depth = 0): unknown {
+  if (typeof value === "string") {
+    return compactText(value, 1200);
+  }
+  if (typeof value !== "object" || value === null) {
+    return value;
+  }
+  if (depth >= 3) {
+    return `[${Array.isArray(value) ? "array" : "object"} omitted]`;
+  }
+  if (Array.isArray(value)) {
+    const items = value.slice(0, 20).map((item) => compactValue(item, depth + 1));
+    if (value.length > 20) items.push(`… ${value.length - 20} more items`);
+    return items;
+  }
+
+  const output: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value).slice(0, 30)) {
+    output[key] = compactValue(child, depth + 1);
+  }
+  const extraKeys = Object.keys(value).length - Object.keys(output).length;
+  if (extraKeys > 0) output.__truncatedKeys = extraKeys;
+  return output;
 }
 
 function compactText(value: string, max: number): string {

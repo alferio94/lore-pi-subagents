@@ -61,6 +61,7 @@ const STATUS_FILE = "status.json";
 const RESULT_FILE = "result.json";
 const RAW_OUTPUT_FILE = "raw-output.txt";
 const STDERR_FILE = "stderr.txt";
+const MAX_RECOVERED_TEXT_BYTES = 1024 * 1024;
 
 export function createRunRecord(input: CreateRunRecordInput): RunRecord {
   const runDir = path.join(path.resolve(input.rootDir), input.delegationId);
@@ -127,8 +128,8 @@ export function recoverRun(runDir: string): RecoveredRun {
   const stderrPath = path.join(absoluteRunDir, STDERR_FILE);
 
   const record = readJson<RunRecord>(recordPath);
-  const rawOutput = fs.existsSync(rawOutputPath) ? fs.readFileSync(rawOutputPath, "utf8") : null;
-  const stderr = fs.existsSync(stderrPath) ? fs.readFileSync(stderrPath, "utf8") : null;
+  const rawOutput = fs.existsSync(rawOutputPath) ? readTextTail(rawOutputPath, MAX_RECOVERED_TEXT_BYTES) : null;
+  const stderr = fs.existsSync(stderrPath) ? readTextTail(stderrPath, MAX_RECOVERED_TEXT_BYTES) : null;
   let status = fs.existsSync(statusPath) ? readJson<StoredRunStatus>(statusPath) : null;
   let result = fs.existsSync(resultPath) ? readJson<StoredRunResult>(resultPath) : null;
 
@@ -266,4 +267,20 @@ function writeTextAtomic(filePath: string, value: string): void {
 
 function readJson<T>(filePath: string): T {
   return JSON.parse(fs.readFileSync(filePath, "utf8")) as T;
+}
+
+function readTextTail(filePath: string, maxBytes: number): string {
+  const stats = fs.statSync(filePath);
+  if (stats.size <= maxBytes) {
+    return fs.readFileSync(filePath, "utf8");
+  }
+
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(maxBytes);
+    fs.readSync(fd, buffer, 0, maxBytes, stats.size - maxBytes);
+    return `[file truncated; kept last ${maxBytes} bytes of ${stats.size}]\n${buffer.toString("utf8")}`;
+  } finally {
+    fs.closeSync(fd);
+  }
 }

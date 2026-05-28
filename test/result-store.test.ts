@@ -167,6 +167,23 @@ test("storeRunOutput rejects final child envelopes that still claim running", ()
   assert.match(recovered.result?.parseError ?? "", /cannot use status 'running'/i);
 });
 
+test("recoverRun previews large raw output from the tail", () => {
+  const rootDir = makeTempDir();
+  const record = createRunRecord({
+    rootDir,
+    delegationId: "dg-large",
+    requestedAgent: "lore-worker",
+    canonicalAgent: "lore-worker",
+    cwd: "/repo",
+  });
+
+  fs.writeFileSync(record.files.rawOutput, `${"x".repeat(2 * 1024 * 1024)}tail`, "utf8");
+
+  const recovered = recoverRun(record.runDir);
+  assert.match(recovered.rawOutput ?? "", /file truncated/);
+  assert.match(recovered.rawOutput ?? "", /tail$/);
+});
+
 test("storeRunOutput preserves malformed raw output for recovery", () => {
   const rootDir = makeTempDir();
   const record = createRunRecord({

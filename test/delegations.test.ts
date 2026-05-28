@@ -56,6 +56,43 @@ test("delegation runtime policy keeps legacy conflict handling out of active chi
   assert.deepEqual(expandedTools, ["read", "contact_supervisor"]);
 });
 
+test("finalizeChildRun caps captured child streams", async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "lore-pi-runtime-delegation-"));
+  const record = createRunRecord({
+    rootDir,
+    delegationId: "dg-feedbeef",
+    requestedAgent: "lore-worker",
+    canonicalAgent: "lore-worker",
+    cwd: "/repo",
+  });
+
+  const envelope = JSON.stringify({
+    status: "completed",
+    summary: "tail parsed",
+    artifacts: [],
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
+    question: null,
+    options: [],
+    risks: [],
+    skill_resolution: "none",
+  });
+  const stdout = Readable.from([
+    "x".repeat(9 * 1024 * 1024),
+    "\n",
+    JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: envelope }] } }),
+  ]);
+
+  await finalizeChildRun(record, stdout, Readable.from([]), Promise.resolve(0));
+
+  const recovered = recoverRun(record.runDir);
+  assert.equal(recovered.status?.status, "completed");
+  assert.equal(recovered.result?.envelope?.summary, "tail parsed");
+  assert.match(fs.readFileSync(record.files.rawOutput, "utf8"), /stream truncated/);
+});
+
 test("finalizeChildRun persists failed output when completion rejects", async () => {
   const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "lore-pi-runtime-delegation-"));
   const record = createRunRecord({

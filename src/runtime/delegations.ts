@@ -14,6 +14,7 @@ export const LORE_MEMORY_EXTENSION_PATH = path.join(os.homedir(), ".pi", "agent"
 export const DEFAULT_DELEGATIONS_ROOT = path.join(os.homedir(), ".local", "share", "lore", "pi", "delegations");
 export const DELEGATIONS_ROOT_ENV = "LORE_PI_RUNTIME_RUN_ROOT";
 export const PI_COMMAND_ENV = "LORE_PI_RUNTIME_PI_COMMAND";
+export const MAX_CAPTURED_STREAM_BYTES = 8 * 1024 * 1024;
 
 export const LORE_MEMORY_TOOL_BUNDLE = "lore:*";
 export const LORE_MEMORY_TOOLS = [
@@ -286,7 +287,11 @@ export async function finalizeChildRun(
   let result: ReturnType<typeof storeRunOutput>;
 
   try {
-    const [stdoutText, stderrText, exitCode] = await Promise.all([readStream(stdout), readStream(stderr), completion]);
+    const [stdoutText, stderrText, exitCode] = await Promise.all([
+      readStreamTail(stdout, MAX_CAPTURED_STREAM_BYTES),
+      readStreamTail(stderr, MAX_CAPTURED_STREAM_BYTES),
+      completion,
+    ]);
     const rawOutput = stdoutText.trim() || stderrText.trim() || JSON.stringify({
       status: "failed",
       summary: exitCode === 0 ? "Child process exited without JSON output." : `Child process exited with code ${exitCode} without JSON output.`,
@@ -351,10 +356,28 @@ function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function readStream(stream: NodeJS.ReadableStream): Promise<string> {
+async function readStreamTail(stream: NodeJS.ReadableStream, maxBytes: number): Promise<string> {
   let output = "";
+  let truncatedBytes = 0;
+
   for await (const chunk of stream) {
     output += chunk.toString();
+    if (Buffer.byteLength(output, "utf8") <= maxBytes) continue;
+
+    const overflow = Buffer.byteLength(output, "utf8") - maxBytes;
+    truncatedBytes += overflow;
+    output = trimUtf8Start(output, maxBytes);
+  }
+
+  if (truncatedBytes === 0) return output;
+  return `[stream truncated; kept last ${maxBytes} bytes, dropped at least ${truncatedBytes} bytes]\n${output}`;
+}
+
+function trimUtf8Start(value: string, maxBytes: number): string {
+  let output = value;
+  while (Buffer.byteLength(output, "utf8") > maxBytes) {
+    const excess = Buffer.byteLength(output, "utf8") - maxBytes;
+    output = output.slice(Math.max(1, excess));
   }
   return output;
 }
