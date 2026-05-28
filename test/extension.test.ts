@@ -46,6 +46,7 @@ function makeTempDir(): string {
 function makeFakePi() {
   const tools = new Map<string, { name: string; execute: (...args: unknown[]) => Promise<unknown> }>();
   const commands: Array<{ name: string; definition: { handler?: (args: string, ctx: unknown) => Promise<void> } }> = [];
+  const shortcuts: Array<{ shortcut: string; definition: { handler?: (ctx: unknown) => Promise<void> | void } }> = [];
   const sentMessages: Array<{
     message: { customType: string; display: boolean; content: string; details?: Record<string, unknown> };
     options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" };
@@ -53,6 +54,7 @@ function makeFakePi() {
   return {
     tools,
     commands,
+    shortcuts,
     sentMessages,
     api: {
       registerTool(definition: { name: string; execute: (...args: unknown[]) => Promise<unknown> }) {
@@ -60,6 +62,9 @@ function makeFakePi() {
       },
       registerCommand(name: string, definition: { handler?: (args: string, ctx: unknown) => Promise<void> }) {
         commands.push({ name, definition });
+      },
+      registerShortcut(shortcut: string, definition: { handler?: (ctx: unknown) => Promise<void> | void }) {
+        shortcuts.push({ shortcut, definition });
       },
       sendMessage(message: { customType: string; display: boolean; content: string; details?: Record<string, unknown> }, options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" }) {
         sentMessages.push({ message, options });
@@ -114,6 +119,7 @@ test("parent runtime registers delegate tools and the lore-models command", asyn
 
     assert.deepEqual([...fake.tools.keys()], [DELEGATE_TOOL_NAME, DELEGATION_READ_TOOL_NAME, DELEGATION_LIST_TOOL_NAME]);
     assert.deepEqual(fake.commands.map((command) => command.name), [LORE_MODELS_COMMAND]);
+    assert.deepEqual(fake.shortcuts.map((shortcut) => shortcut.shortcut), ["ctrl+space"]);
   });
 });
 

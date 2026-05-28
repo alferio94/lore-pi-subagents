@@ -18,6 +18,7 @@ import {
 } from "../runtime/delegations.ts";
 import { readModelRoutingConfig, writeModelRoutingConfig } from "../runtime/model-routing.ts";
 import { openLoreModelsUI } from "../ui/lore-models.ts";
+import { DELEGATION_TRACE_FILE, openDelegationViewer } from "../ui/delegations.ts";
 
 export const EXTENSION_NAME = "lore-pi-runtime";
 export const DELEGATE_TOOL_NAME = "delegate";
@@ -41,6 +42,14 @@ interface ToolExecuteContext {
 
 interface SendMessageCapablePi {
   sendMessage?: (message: { customType: string; display: boolean; content: string; details?: Record<string, unknown> }, options?: { triggerTurn?: boolean; deliverAs?: "steer" | "followUp" | "nextTurn" }) => void;
+}
+
+interface ShortcutCapablePi {
+  registerShortcut?: (shortcut: string, options: { description?: string; handler: (ctx: unknown) => Promise<void> | void }) => void;
+}
+
+interface EventCapablePi {
+  on?: ExtensionAPI["on"];
 }
 
 type SubagentState = "running" | "completed" | "error";
@@ -258,8 +267,18 @@ export default function lorePiRuntime(pi: ExtensionAPI): void {
         });
       },
     });
+
+    const shortcutApi = pi as unknown as ShortcutCapablePi;
+    shortcutApi.registerShortcut?.("ctrl+space", {
+      description: "Open the Lore background delegation viewer.",
+      handler: async (ctx) => {
+        await openDelegationViewer(ctx as never, { listDelegations, readDelegation });
+      },
+    });
     return;
   }
+
+  registerChildTraceHooks(pi);
 
   pi.registerTool({
     name: CONTACT_SUPERVISOR_TOOL_NAME,
@@ -319,6 +338,59 @@ async function getAvailableModelRefs(ctx: { modelRegistry?: { getAvailable?: (()
 function formatModelRef(model: AvailableModelDescriptor): string | undefined {
   if (!model?.provider || !model?.id) return undefined;
   return `${model.provider}/${model.id}`;
+}
+
+function registerChildTraceHooks(pi: ExtensionAPI): void {
+  const eventApi = pi as unknown as EventCapablePi;
+  if (typeof eventApi.on !== "function") return;
+
+  eventApi.on("agent_start", async (_event, ctx) => {
+    const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+    await appendChildTrace("agent_start", model ? { summary: `model ${model}`, model } : {});
+  });
+  eventApi.on("agent_end", async () => appendChildTrace("agent_end"));
+  eventApi.on("turn_start", async (event) => appendChildTrace("turn_start", { turnIndex: event.turnIndex, summary: `turn ${event.turnIndex}` }));
+  eventApi.on("turn_end", async (event) => appendChildTrace("turn_end", { turnIndex: event.turnIndex, summary: `turn ${event.turnIndex}` }));
+  eventApi.on("message_end", async (event) => {
+    const message = event.message as { role?: string; content?: unknown; provider?: string; model?: string; usage?: { input?: number; output?: number; totalTokens?: number } };
+    if (message.role !== "assistant") return;
+    const model = message.provider && message.model ? `${message.provider}/${message.model}` : message.model;
+    if (message.usage) {
+      await appendChildTrace("token_usage", {
+        model,
+        input: message.usage.input ?? 0,
+        output: message.usage.output ?? 0,
+        totalTokens: message.usage.totalTokens ?? ((message.usage.input ?? 0) + (message.usage.output ?? 0)),
+        summary: `${message.usage.input ?? 0} in / ${message.usage.output ?? 0} out`,
+      });
+    }
+    await appendChildTrace("assistant_message", { summary: compactJson(message.content, 600) });
+  });
+  eventApi.on("tool_execution_start", async (event) => appendChildTrace("tool_start", { toolName: event.toolName, summary: compactJson(event.args, 700) }));
+  eventApi.on("tool_execution_update", async (event) => appendChildTrace("tool_update", { toolName: event.toolName, summary: compactJson(event.partialResult, 700) }));
+  eventApi.on("tool_execution_end", async (event) => appendChildTrace("tool_end", { toolName: event.toolName, status: event.isError ? "error" : "ok", summary: compactJson(event.result, 900) }));
+}
+
+async function appendChildTrace(type: string, details: Record<string, unknown> = {}): Promise<void> {
+  const runDir = process.env[CHILD_RUN_DIR_ENV];
+  if (!runDir) return;
+  const traceFile = path.join(runDir, DELEGATION_TRACE_FILE);
+  const record = { ts: new Date().toISOString(), type, ...details };
+  await fs.mkdir(runDir, { recursive: true });
+  await fs.appendFile(traceFile, `${JSON.stringify(record)}\n`, "utf8").catch(() => {});
+}
+
+function compactJson(value: unknown, max = 1000): string {
+  try {
+    return compactText(JSON.stringify(value), max);
+  } catch {
+    return compactText(String(value), max);
+  }
+}
+
+function compactText(value: string, max: number): string {
+  const clean = value.trim().replace(/\s+/g, " ");
+  return clean.length > max ? `${clean.slice(0, max)}…` : clean;
 }
 
 function isChildRuntime(): boolean {
