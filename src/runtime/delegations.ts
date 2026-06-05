@@ -8,7 +8,13 @@ import type { AgentDefinition, AgentRegistry } from "./types.ts";
 import { isSddAgent, readModelRoutingConfig, resolveModelRoute } from "./model-routing.ts";
 import { launchChildProcess } from "./child-launch.ts";
 import { createRunRecord, recoverRun, storeRunOutput, type RecoveredRun, type RunRecord } from "./result-store.ts";
-import type { DelegationEnvelope } from "./envelopes.ts";
+import {
+  RUN_STATUSES,
+  SDD_PHASES,
+  SKILL_RESOLUTIONS,
+  type DelegationEnvelope,
+  type EnvelopeKind,
+} from "./envelopes.ts";
 
 export const LORE_MEMORY_EXTENSION_PATH = path.join(os.homedir(), ".pi", "agent", "extensions", "lore-memory.ts");
 export const DEFAULT_DELEGATIONS_ROOT = path.join(os.homedir(), ".local", "share", "lore", "pi", "delegations");
@@ -263,12 +269,72 @@ export function buildChildSystemPrompt(agent: AgentDefinition): string {
   const base = agent.body.trim();
   const isSdd = agent.requiredEnvelope === "sdd" || (agent.phase !== undefined) || isSddAgent(agent.name);
   const envelope = isSdd
-    ? `Return ONLY one JSON object with exactly these keys: status, phase, summary, artifacts, files, validations, risks, next_step, continuation, question, options, skill_resolution. phase must match the SDD phase. summary should stay concise. artifacts/files/validations/options/risks must be string arrays. next_step/continuation/question must be a string or null. Final output status must be one of: completed, needs_user_input, failed. Do not use running in the final response; running is reserved for parent-side transient process state while the child is still alive. skill_resolution must be one of: injected, fallback-registry, fallback-path, none.`
-    : `Return ONLY one JSON object with exactly these keys: status, summary, artifacts, files, validations, risks, next_step, continuation, question, options, skill_resolution. Do not include prose, markdown fences, or extra keys. summary should stay concise. artifacts/files/validations/options/risks must be string arrays. next_step/continuation/question must be a string or null. Final output status must be one of: completed, needs_user_input, failed. Do not use running in the final response; running is reserved for parent-side transient process state while the child is still alive. skill_resolution must be one of: injected, fallback-registry, fallback-path, none.`;
+    ? injectCanonicalPiAdapterContract("sdd", agent.phase)
+    : injectCanonicalPiAdapterContract("worker");
   const example = isSdd
     ? `Example shape: {"status":"completed","phase":"${agent.phase ?? "apply"}","summary":"...","artifacts":[],"files":[],"validations":[],"risks":[],"next_step":null,"continuation":null,"question":null,"options":[],"skill_resolution":"none"}`
     : `Example shape: {"status":"completed","summary":"...","artifacts":[],"files":[],"validations":[],"risks":[],"next_step":null,"continuation":null,"question":null,"options":[],"skill_resolution":"none"}`;
   return [base, "", "## Required final response contract", envelope, example].filter(Boolean).join("\n");
+}
+
+/**
+ * Build the canonical Pi Lore delegation adapter final response contract. The
+ * field list, status set, phase set, and skill_resolution set are derived
+ * directly from `envelopes.ts` so the runtime validator and the prompt stay
+ * in lockstep. The wording is explicitly labeled as the Pi adapter contract;
+ * core SDD behavior remains harness-agnostic and other harnesses (Codex,
+ * Antigravity) are NOT required to consume this exact JSON envelope.
+ */
+export function injectCanonicalPiAdapterContract(kind: EnvelopeKind, defaultPhase?: string): string {
+  const fieldList = canonicalPiFields(kind);
+  const finalStatuses = canonicalFinalStatuses();
+  const skillResolutions = SKILL_RESOLUTIONS.join(", ");
+
+  const lines: string[] = [
+    "Pi Lore delegation adapter contract (final child JSON envelope).",
+    `Return ONLY one JSON object with exactly these keys: ${fieldList}.`,
+  ];
+  if (kind === "sdd") {
+    lines.push(`phase must match the SDD phase (one of: ${SDD_PHASES.join(", ")}).`);
+  }
+  lines.push(
+    "summary should stay concise.",
+    "artifacts/files/validations/options/risks must be string arrays.",
+    "next_step/continuation/question must be a string or null.",
+    `Final output status must be one of: ${finalStatuses}.`,
+    "Do not use running in the final response; running is reserved for parent-side transient process state while the child is still alive.",
+    `skill_resolution must be one of: ${skillResolutions}.`,
+  );
+  // defaultPhase is exposed via example shape in buildChildSystemPrompt; the contract line itself
+  // intentionally documents the phase set so the model cannot substitute a custom value.
+  void defaultPhase;
+  return lines.join(" ");
+}
+
+function canonicalPiFields(kind: EnvelopeKind): string {
+  const workerFields = [
+    "status",
+    "summary",
+    "artifacts",
+    "files",
+    "validations",
+    "risks",
+    "next_step",
+    "continuation",
+    "question",
+    "options",
+    "skill_resolution",
+  ];
+  if (kind === "sdd") {
+    return ["status", "phase", ...workerFields.slice(1)].join(", ");
+  }
+  return workerFields.join(", ");
+}
+
+function canonicalFinalStatuses(): string {
+  // Final child envelope statuses: completed, needs_user_input, failed.
+  // `running` is intentionally excluded — runtime finalization rejects it.
+  return RUN_STATUSES.filter((status) => status !== "running").join(", ");
 }
 
 function discoverChildExtensions(): string[] {

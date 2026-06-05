@@ -55,6 +55,18 @@ import (
 
 func main() {
   homeDir := os.Args[1]
+  contract := install.RuntimeContract{
+    Version: 1,
+    AgentResolution: install.AgentResolutionContract{
+      ManagedFilenamePrefix:      "lore-managed-",
+      SupportsManagedFrontmatter: true,
+      ManagedBy:                  "lore-cli",
+      ManagedLayer:               "global-overlay",
+      Precedence:                 []string{"builtin", "managed", "user", "project"},
+      ProjectAgentsDefault:       "enabled",
+      ProjectAgentsSettingPath:   "lore.agent_resolution.project_agents",
+    },
+  }
   _, err := install.Service{}.InstallPi(install.PiInstallRequest{
     HomeDir: homeDir,
     ServerURL: "https://example.test",
@@ -62,7 +74,8 @@ func main() {
     LoreConfigDir: filepath.Join(homeDir, ".lore"),
     LoreCLIVersion: "runtime-e2e",
     Target: install.TargetPi,
-    Components: []install.ComponentID{install.ComponentCorePack, install.ComponentPiExtensions},
+    Components: []install.ComponentID{install.ComponentCorePack, install.ComponentLoreServerMCP, install.ComponentExtendedSkills},
+    RuntimeContract: contract,
     Now: time.Unix(1716681600, 0).UTC(),
   })
   if err != nil {

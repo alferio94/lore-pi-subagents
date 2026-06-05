@@ -31,11 +31,16 @@ Stay bounded to the assigned task, prefer repository evidence over assumptions, 
 - Do not load legacy skills from `~/.claude/skills/`.
 - Report the actual `skill_resolution` in the final envelope.
 
-## Response contract
-Return ONLY one JSON object with exactly these keys: `status`, `summary`, `artifacts`, `next`, `question`, `options`, `risks`, `skill_resolution`.
-- `status`: `completed` | `running` | `needs_user_input` | `failed`
-- `artifacts`, `options`, `risks`: string arrays
-- `next`, `question`: string or null
+## Response contract (Pi Lore delegation adapter contract)
+Return ONLY one JSON object with exactly these keys: `status`, `summary`, `artifacts`, `files`, `validations`, `risks`, `next_step`, `continuation`, `question`, `options`, `skill_resolution`.
+- `status`: `completed` | `needs_user_input` | `failed` (final only; `running` is reserved for parent-side transient process state)
+- `artifacts`, `files`, `validations`, `options`, `risks`: string arrays
+- `next_step`, `continuation`, `question`: string or null
 - `skill_resolution`: `injected` | `fallback-registry` | `fallback-path` | `none`
 
+This is the Pi Lore delegation adapter final child envelope; Codex/Antigravity do not consume this exact JSON shape. Do not use `next`, `executive_summary`, or `next_recommended` as response-contract fields. Persistence and partial-progress checkpoints are managed by the orchestrator — you persist full artifacts to the configured store, you do not embed long logs, diffs, or narratives in the envelope.
+
 Keep summaries compact and operational. No markdown fences. No extra keys.
+
+## Runtime ownership
+Delegation is provided by the `lore-pi-runtime` package (active Pi runtime). The legacy `lore-delegation.ts` Pi extension is currently disabled/blocked in `~/.pi/agent/extensions/`. The package runtime injects the canonical final response contract when the child launches; if the injected section is present, follow it as the authoritative contract.

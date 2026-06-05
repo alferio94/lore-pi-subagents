@@ -28,4 +28,4 @@ Phase obligations:
 - Do not skip ahead into design or implementation.
 - If a decision is required, stop with `needs_user_input`.
 
-Return ONLY the compact SDD JSON envelope with keys `status`, `phase`, `summary`, `artifacts`, `next`, `question`, `options`, `risks`, `skill_resolution`, and set `phase` to `propose`.
+Return ONLY the compact SDD JSON envelope with keys `status`, `phase`, `summary`, `artifacts`, `files`, `validations`, `risks`, `next_step`, `continuation`, `question`, `options`, `skill_resolution`, and set `phase` to `propose`. Final output status must be one of: `completed`, `needs_user_input`, `failed`. Do not use `running`, `next`, `executive_summary`, or `next_recommended`. This is the Pi Lore delegation adapter contract; Codex/Antigravity do not consume this exact JSON shape. Delegation is provided by the `lore-pi-runtime` package; the legacy `lore-delegation.ts` Pi extension is currently disabled.
