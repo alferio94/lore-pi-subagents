@@ -6,12 +6,13 @@ import * as path from "node:path";
 import { Readable } from "node:stream";
 import {
   buildChildSystemPrompt,
+  discoverChildExtensions,
   expandAgentTools,
   finalizeChildRun,
   getDelegationRuntimePolicy,
   injectCanonicalPiAdapterContract,
   listDelegations,
-  LORE_MEMORY_TOOLS,
+  MCP_LORE_MEMORY_TOOLS,
   readDelegation,
 } from "../src/runtime/delegations.ts";
 import { getContractAliasMap, getInstallPolicy, getRuntimeInvariants } from "../src/runtime/contract.ts";
@@ -19,13 +20,13 @@ import { createRunRecord, recoverRun } from "../src/runtime/result-store.ts";
 import { SDD_PHASES, SKILL_RESOLUTIONS } from "../src/runtime/envelopes.ts";
 import type { AgentDefinition } from "../src/runtime/types.ts";
 
-test("expandAgentTools expands lore memory bundle without enabling delegate", () => {
+test("expandAgentTools expands the MCP lore_memory_* tool surface without enabling delegate", () => {
   assert.deepEqual(
-    expandAgentTools(["read", "lore:*", "contact_supervisor"]),
-    ["read", ...LORE_MEMORY_TOOLS, "contact_supervisor"],
+    expandAgentTools(["read", ...MCP_LORE_MEMORY_TOOLS, "contact_supervisor"]),
+    ["read", ...MCP_LORE_MEMORY_TOOLS, "contact_supervisor"],
   );
-  assert.equal(expandAgentTools(["lore:*"]).includes("delegate"), false);
-  assert.equal(expandAgentTools(["lore:*"]).includes("delegation_read"), false);
+  assert.equal(expandAgentTools(MCP_LORE_MEMORY_TOOLS as unknown as string[]).includes("delegate"), false);
+  assert.equal(expandAgentTools(MCP_LORE_MEMORY_TOOLS as unknown as string[]).includes("delegation_read"), false);
 });
 
 test("expandAgentTools strips parent-only tools and keeps the child-only supervisor tool", () => {
@@ -59,6 +60,63 @@ test("delegation runtime policy keeps legacy conflict handling out of active chi
     [],
   );
   assert.deepEqual(expandedTools, ["read", "contact_supervisor"]);
+});
+
+test("delegation runtime policy never retains the deprecated lore-memory extension", () => {
+  // Focused guard for the fix-pi-envelope-tolerance-and-remove-lore-memory
+  // change: the deprecated `lore-memory.ts` extension MUST NOT appear in
+  // the active runtime policy. Memory operations are exposed via the
+  // MCP `lore_memory_*` tool surface instead.
+  const policy = getDelegationRuntimePolicy();
+  assert.equal(
+    policy.retainedExtensions.includes("lore-memory.ts"),
+    false,
+    "delegation runtime policy must not retain the deprecated lore-memory.ts extension",
+  );
+  assert.equal(
+    policy.blockedLegacyExtensions.includes("lore-memory.ts"),
+    false,
+    "delegation runtime policy must not block the deprecated lore-memory.ts extension; the contract simply does not reference it",
+  );
+});
+
+test("discoverChildExtensions never autoloads the deprecated lore-memory extension", () => {
+  // Focused guard: even if a stale `~/.pi/agent/extensions/lore-memory.ts`
+  // is left behind by a prior install, the runtime MUST NOT add it to the
+  // set of extensions passed to child pi processes. The autoload set is
+  // limited to the current runtime extension; memory operations flow
+  // through the MCP `lore_memory_*` tool surface, not Pi extensions.
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "lore-pi-runtime-ext-autoload-"));
+  const fakeExtensionPath = path.join(fakeHome, ".pi", "agent", "extensions", "lore-memory.ts");
+  fs.mkdirSync(path.dirname(fakeExtensionPath), { recursive: true });
+  fs.writeFileSync(fakeExtensionPath, "// stale lore-memory.ts placeholder\n", "utf8");
+
+  const previousHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+  try {
+    const discovered = discoverChildExtensions();
+    for (const extensionPath of discovered) {
+      assert.equal(
+        path.basename(extensionPath) === "lore-memory.ts",
+        false,
+        `discoverChildExtensions autoloaded deprecated lore-memory.ts at ${extensionPath}`,
+      );
+      assert.equal(
+        extensionPath.includes(`${path.sep}extensions${path.sep}lore-memory.ts`),
+        false,
+        `discoverChildExtensions autoloaded an extensions/ path that resolves to lore-memory.ts: ${extensionPath}`,
+      );
+    }
+    // The discovery set must be non-empty (the current runtime extension is always autoloaded)
+    // and must NOT include any extension that resolves to the deprecated memory path.
+    assert.ok(discovered.length >= 1, "discoverChildExtensions must still autoload the current runtime extension");
+  } finally {
+    if (previousHome === undefined) {
+      delete process.env.HOME;
+    } else {
+      process.env.HOME = previousHome;
+    }
+  }
 });
 
 test("finalizeChildRun caps captured child streams", async () => {

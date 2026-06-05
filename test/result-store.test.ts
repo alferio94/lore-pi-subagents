@@ -201,7 +201,7 @@ test("storeRunOutput preserves malformed raw output for recovery", () => {
 
   const result = storeRunOutput(record, "not valid json", "stderr boom");
   assert.equal(result.status, "failed");
-  assert.match(result.parseError ?? "", /single JSON object/i);
+  assert.match(result.parseError ?? "", /Could not extract a single envelope JSON object/i);
   assert.match(result.rawOutputPath ?? "", /raw-output\.txt$/);
   assert.match(result.stderrPath ?? "", /stderr\.txt$/);
 
@@ -209,4 +209,272 @@ test("storeRunOutput preserves malformed raw output for recovery", () => {
   assert.equal(recovered.status?.status, "failed");
   assert.equal(recovered.rawOutput, "not valid json");
   assert.equal(recovered.stderr, "stderr boom");
+});
+
+test("storeRunOutput recovers a single fenced JSON block and records fenced-json parseSource", () => {
+  const rootDir = makeTempDir();
+  const record = createRunRecord({
+    rootDir,
+    delegationId: "dg-fenced",
+    requestedAgent: "sdd-apply",
+    canonicalAgent: "sdd-apply",
+    cwd: "/repo",
+  });
+
+  const envelope = JSON.stringify({
+    status: "completed",
+    phase: "apply",
+    summary: "Slice finished.",
+    artifacts: ["sdd/change/apply-report"],
+    files: [],
+    validations: [],
+    next_step: "verify",
+    continuation: null,
+    question: null,
+    options: [],
+    risks: [],
+    skill_resolution: "injected",
+  });
+  const rawOutput = `Here is the final envelope:\n\n\`\`\`json\n${envelope}\n\`\`\`\n`;
+
+  const result = storeRunOutput(record, rawOutput);
+  assert.equal(result.status, "completed");
+  assert.equal(result.envelope?.summary, "Slice finished.");
+  assert.equal(result.parseSource, "fenced-json");
+  assert.equal(result.envelope && "phase" in result.envelope ? result.envelope.phase : null, "apply");
+
+  const recovered = recoverRun(record.runDir);
+  assert.equal(recovered.status?.parseSource, "fenced-json");
+  assert.equal(recovered.result?.parseSource, "fenced-json");
+});
+
+test("storeRunOutput recovers a harmless-wrapped envelope and records plain-text-fallback parseSource", () => {
+  const rootDir = makeTempDir();
+  const record = createRunRecord({
+    rootDir,
+    delegationId: "dg-wrapper",
+    requestedAgent: "lore-worker",
+    canonicalAgent: "lore-worker",
+    cwd: "/repo",
+  });
+
+  const envelope = JSON.stringify({
+    status: "completed",
+    summary: "wrapped ok",
+    artifacts: [],
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
+    question: null,
+    options: [],
+    risks: [],
+    skill_resolution: "none",
+  });
+  const rawOutput = `Sure, here is the final result:\n\n${envelope}\n\nThanks!`;
+
+  const result = storeRunOutput(record, rawOutput);
+  assert.equal(result.status, "completed");
+  assert.equal(result.envelope?.summary, "wrapped ok");
+  assert.equal(result.parseSource, "plain-text-fallback");
+
+  const recovered = recoverRun(record.runDir);
+  assert.equal(recovered.status?.parseSource, "plain-text-fallback");
+});
+
+test("storeRunOutput does not record parseSource for raw-json path", () => {
+  const rootDir = makeTempDir();
+  const record = createRunRecord({
+    rootDir,
+    delegationId: "dg-raw",
+    requestedAgent: "lore-worker",
+    canonicalAgent: "lore-worker",
+    cwd: "/repo",
+  });
+
+  const rawOutput = JSON.stringify({
+    status: "completed",
+    summary: "raw ok",
+    artifacts: [],
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
+    question: null,
+    options: [],
+    risks: [],
+    skill_resolution: "none",
+  });
+
+  const result = storeRunOutput(record, rawOutput);
+  assert.equal(result.status, "completed");
+  assert.equal(result.parseSource, undefined);
+
+  const recovered = recoverRun(record.runDir);
+  assert.equal(recovered.status?.parseSource, undefined);
+  assert.equal(recovered.result?.parseSource, undefined);
+});
+
+test("storeRunOutput rejects multiple fenced JSON blocks as ambiguous", () => {
+  const rootDir = makeTempDir();
+  const record = createRunRecord({
+    rootDir,
+    delegationId: "dg-multi-fence",
+    requestedAgent: "lore-worker",
+    canonicalAgent: "lore-worker",
+    cwd: "/repo",
+  });
+
+  const envelope = JSON.stringify({
+    status: "completed",
+    summary: "done",
+    artifacts: [],
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
+    question: null,
+    options: [],
+    risks: [],
+    skill_resolution: "none",
+  });
+  const rawOutput = `\`\`\`json\n${envelope}\n\`\`\`\nThen:\n\`\`\`json\n${envelope}\n\`\`\`\n`;
+
+  const result = storeRunOutput(record, rawOutput);
+  assert.equal(result.status, "failed");
+  assert.equal(result.envelope, undefined);
+  assert.match(result.parseError ?? "", /Could not extract a single envelope JSON object/i);
+  assert.equal(result.parseSource, undefined);
+});
+
+test("storeRunOutput rejects multiple top-level JSON objects in prose as ambiguous", () => {
+  const rootDir = makeTempDir();
+  const record = createRunRecord({
+    rootDir,
+    delegationId: "dg-multi-prose",
+    requestedAgent: "lore-worker",
+    canonicalAgent: "lore-worker",
+    cwd: "/repo",
+  });
+
+  const envelope = JSON.stringify({
+    status: "completed",
+    summary: "done",
+    artifacts: [],
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
+    question: null,
+    options: [],
+    risks: [],
+    skill_resolution: "none",
+  });
+  const rawOutput = `Draft:\n${envelope}\nFinal: ${envelope}`;
+
+  const result = storeRunOutput(record, rawOutput);
+  assert.equal(result.status, "failed");
+  assert.match(result.parseError ?? "", /Could not extract a single envelope JSON object/i);
+});
+
+test("storeRunOutput rejects fenced JSON with extra-keys after extraction (strict schema still runs)", () => {
+  const rootDir = makeTempDir();
+  const record = createRunRecord({
+    rootDir,
+    delegationId: "dg-fenced-bad",
+    requestedAgent: "sdd-apply",
+    canonicalAgent: "sdd-apply",
+    cwd: "/repo",
+  });
+
+  const invalidEnvelope = JSON.stringify({
+    status: "completed",
+    phase: "apply",
+    summary: "with extras",
+    artifacts: [],
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
+    question: null,
+    options: [],
+    risks: [],
+    skill_resolution: "injected",
+    surprise: true,
+  });
+  const rawOutput = `\`\`\`json\n${invalidEnvelope}\n\`\`\`\n`;
+
+  const result = storeRunOutput(record, rawOutput);
+  assert.equal(result.status, "failed");
+  assert.equal(result.envelope, undefined);
+  assert.match(result.parseError ?? "", /unsupported keys/i);
+  assert.equal(result.parseSource, undefined);
+});
+
+test("storeRunOutput rejects fenced JSON with final status running (final-running rule still applies)", () => {
+  const rootDir = makeTempDir();
+  const record = createRunRecord({
+    rootDir,
+    delegationId: "dg-fenced-running",
+    requestedAgent: "lore-worker",
+    canonicalAgent: "lore-worker",
+    cwd: "/repo",
+  });
+
+  const runningEnvelope = JSON.stringify({
+    status: "running",
+    summary: "still working",
+    artifacts: [],
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
+    question: null,
+    options: [],
+    risks: [],
+    skill_resolution: "none",
+  });
+  const rawOutput = `\`\`\`json\n${runningEnvelope}\n\`\`\`\n`;
+
+  const result = storeRunOutput(record, rawOutput);
+  assert.equal(result.status, "failed");
+  assert.equal(result.envelope, undefined);
+  assert.match(result.parseError ?? "", /cannot use status 'running'/i);
+});
+
+test("recoverRun reconstructs result from fenced raw output when result files are missing", () => {
+  const rootDir = makeTempDir();
+  const record = createRunRecord({
+    rootDir,
+    delegationId: "dg-recover-fence",
+    requestedAgent: "sdd-apply",
+    canonicalAgent: "sdd-apply",
+    cwd: "/repo",
+  });
+
+  const envelope = JSON.stringify({
+    status: "completed",
+    phase: "apply",
+    summary: "fence recovered",
+    artifacts: ["sdd/change/apply-report"],
+    files: [],
+    validations: [],
+    next_step: "verify",
+    continuation: null,
+    question: null,
+    options: [],
+    risks: [],
+    skill_resolution: "injected",
+  });
+  const rawOutput = `Final answer:\n\n\`\`\`json\n${envelope}\n\`\`\`\n`;
+
+  fs.writeFileSync(record.files.rawOutput, rawOutput, "utf8");
+  fs.rmSync(record.files.status);
+  fs.rmSync(record.files.result, { force: true });
+
+  const recovered = recoverRun(record.runDir);
+  assert.equal(recovered.status?.status, "completed");
+  assert.equal(recovered.status?.parseSource, "fenced-json");
+  assert.equal(recovered.result?.envelope?.summary, "fence recovered");
+  assert.equal(recovered.result?.envelope && "phase" in recovered.result.envelope ? recovered.result.envelope.phase : null, "apply");
 });

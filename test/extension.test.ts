@@ -664,6 +664,71 @@ test("child prompt forbids final running envelopes", () => {
   assert.doesNotMatch(sddPrompt, /status must be one of: completed, running, needs_user_input, failed/i);
 });
 
+test("shipped builtin prompts teach the canonical MCP lore_memory_* surface and do not advertise lore-memory.ts as active", () => {
+  // Focused guard for the fix-pi-envelope-tolerance-and-remove-lore-memory
+  // change: every shipped builtin prompt MUST point memory operations at
+  // the canonical MCP `lore_memory_*` tool surface, MUST explicitly mark
+  // the Pi-native `lore-memory.ts` extension as removed/unavailable, and
+  // MUST teach the canonical Pi JSON envelope as the only valid final
+  // output format. Fenced JSON and plain-text fallback envelopes are
+  // runtime recovery behavior only and MUST NOT be advertised as the
+  // preferred child contract.
+  const promptFiles = fs
+    .readdirSync("agents", { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+    .map((entry) => path.join("agents", entry.name))
+    .sort();
+
+  assert.ok(promptFiles.length > 0, "expected shipped builtin prompts under agents/");
+
+  for (const promptFile of promptFiles) {
+    const body = fs.readFileSync(promptFile, "utf8");
+
+    // Every prompt must teach the canonical MCP lore_memory_* tool surface.
+    assert.match(
+      body,
+      /MCP Lore Server tools \(`lore_memory_\*`\)/i,
+      `${promptFile} must teach the canonical MCP lore_memory_* tool surface`,
+    );
+    assert.match(
+      body,
+      /`lore_memory_search`/,
+      `${promptFile} must mention the canonical lore_memory_search tool`,
+    );
+    assert.match(
+      body,
+      /`lore_memory_get`/,
+      `${promptFile} must mention the canonical lore_memory_get tool`,
+    );
+
+    // Every prompt must explicitly mark lore-memory.ts as removed.
+    assert.match(
+      body,
+      /`lore-memory\.ts` extension (was|has been) removed/i,
+      `${promptFile} must explicitly mark lore-memory.ts as removed`,
+    );
+    // The prompt must NOT teach lore-memory.ts as a still-active extension.
+    assert.doesNotMatch(
+      body,
+      /MUST use `lore-memory\.ts`|use `lore-memory\.ts` for|load `lore-memory\.ts`/i,
+      `${promptFile} must not advertise lore-memory.ts as an active runtime path`,
+    );
+
+    // The canonical Pi JSON envelope is the only valid final output format.
+    assert.match(
+      body,
+      /canonical Pi JSON envelope is the ONLY valid final output format/i,
+      `${promptFile} must teach the canonical Pi JSON envelope as the only valid final output format`,
+    );
+    // Fenced JSON and plain-text fallback envelopes are recovery behavior only.
+    assert.match(
+      body,
+      /fenced JSON blocks? (and|or) plain-text fallback .* are runtime recovery behavior/i,
+      `${promptFile} must call out fenced JSON / plain-text fallback as recovery behavior only`,
+    );
+  }
+});
+
 test("delegate persists failed result when child output ends with status running", async () => {
   const homeDir = makeTempDir();
   const runRoot = path.join(homeDir, "runs");
@@ -757,7 +822,7 @@ test("delegate async notifies parse errors without exposing raw output", async (
       assert.equal(notifications[0].level, "error");
       assert.match(notifications[0].message, new RegExp(`Background delegation ${delegated.details.id} \\(lore-worker\\) failed:`));
       assert.doesNotMatch(notifications[0].message, /SECRET_TOKEN_123/);
-      assert.match(notifications[0].message, /single JSON object/i);
+      assert.match(notifications[0].message, /Could not extract a single envelope JSON object/i);
     },
   );
 });
@@ -812,6 +877,20 @@ test("delegate grants lore memory tools to every child before launching", async 
         "write",
         "edit",
         "bash",
+        "lore_memory_search",
+        "lore_memory_get",
+        "lore_memory_save",
+        "lore_memory_update",
+        "lore_memory_list_projects",
+        "lore_memory_list_skills",
+        "contact_supervisor",
+      ]);
+      assert.equal(tools.includes("lore:*"), false);
+      assert.equal(tools.includes("delegate"), false);
+      assert.equal(tools.includes("delegation_read"), false);
+      assert.equal(tools.includes("delegation_list"), false);
+      // The deprecated Pi-native memory tools must not be granted to children.
+      for (const deprecated of [
         "lore_search",
         "lore_save",
         "lore_get_observation",
@@ -822,12 +901,9 @@ test("delegate grants lore memory tools to every child before launching", async 
         "lore_skill_save",
         "lore_skill_list",
         "lore_skill_get",
-        "contact_supervisor",
-      ]);
-      assert.equal(tools.includes("lore:*"), false);
-      assert.equal(tools.includes("delegate"), false);
-      assert.equal(tools.includes("delegation_read"), false);
-      assert.equal(tools.includes("delegation_list"), false);
+      ]) {
+        assert.equal(tools.includes(deprecated), false, `child tool surface must not include deprecated ${deprecated}`);
+      }
     },
   );
 });

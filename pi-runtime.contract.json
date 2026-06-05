@@ -14,7 +14,7 @@
   },
   "installPolicy": {
     "mergeSettingsPackagesFirst": true,
-    "retainedExtensions": ["lore-memory.ts", "lore-footer.ts"],
+    "retainedExtensions": ["lore-footer.ts"],
     "blockedLegacyExtensions": ["lore-delegation.ts"],
     "managedExtensionsBookkeepingOnly": true,
     "conflictPolicy": "non-destructive-warn"

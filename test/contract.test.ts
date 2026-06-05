@@ -56,7 +56,7 @@ test("install policy keeps retained and blocked extensions explicit with no over
   const policy = contract.installPolicy;
   const agentResolution = contract.agentResolution;
 
-  assert.deepEqual(policy.retainedExtensions, ["lore-memory.ts", "lore-footer.ts"]);
+  assert.deepEqual(policy.retainedExtensions, ["lore-footer.ts"]);
   assert.deepEqual(policy.blockedLegacyExtensions, ["lore-delegation.ts"]);
   assert.equal(policy.managedExtensionsBookkeepingOnly, true);
   assert.deepEqual(
@@ -71,6 +71,34 @@ test("install policy keeps retained and blocked extensions explicit with no over
   assert.deepEqual(agentResolution.precedence, ["builtin", "managed", "user", "project"]);
   assert.equal(agentResolution.projectAgentsDefault, "enabled");
   assert.equal(agentResolution.projectAgentsSettingPath, "lore.agent_resolution.project_agents");
+});
+
+test("install policy never lists the deprecated lore-memory extension in any active slot", () => {
+  // Focused guard for the fix-pi-envelope-tolerance-and-remove-lore-memory
+  // change: the deprecated `lore-memory.ts` extension MUST NOT be retained,
+  // MUST NOT be blocked (it is not a legacy contract; the install policy
+  // simply does not reference it), and MUST NOT appear anywhere in the
+  // shipped runtime contract. The runtime has migrated memory operations
+  // to the MCP `lore_memory_*` tool surface.
+  const contract = loadRuntimeContract();
+  const policy = contract.installPolicy;
+  const serialized = JSON.stringify(contract);
+
+  assert.equal(
+    policy.retainedExtensions.includes("lore-memory.ts"),
+    false,
+    "retainedExtensions must not include the deprecated lore-memory.ts extension",
+  );
+  assert.equal(
+    policy.blockedLegacyExtensions.includes("lore-memory.ts"),
+    false,
+    "blockedLegacyExtensions must not include lore-memory.ts; the deprecated extension is simply not part of the contract",
+  );
+  assert.equal(
+    serialized.includes("lore-memory.ts"),
+    false,
+    "the shipped runtime contract must not reference the deprecated lore-memory.ts extension at all",
+  );
 });
 
 test("agent catalog is complete for shipped builtin prompts and SDD phases", () => {
@@ -114,11 +142,11 @@ test("validateRuntimeContract rejects alias collisions and unknown alias targets
 
 test("validateRuntimeContract rejects retained-blocked overlap and invalid explicit skill policy", () => {
   const overlappingPolicy = cloneContract(loadRuntimeContract());
-  overlappingPolicy.installPolicy.blockedLegacyExtensions = ["lore-memory.ts"];
+  overlappingPolicy.installPolicy.blockedLegacyExtensions = ["lore-footer.ts"];
 
   assert.throws(
     () => validateRuntimeContract(overlappingPolicy),
-    /conflicting retained\/blocked extensions: lore-memory\.ts/i,
+    /conflicting retained\/blocked extensions: lore-footer\.ts/i,
   );
 
   const invalidSkillPolicy = cloneContract(loadRuntimeContract());

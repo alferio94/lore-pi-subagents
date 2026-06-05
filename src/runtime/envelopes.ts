@@ -3,9 +3,18 @@ export const SDD_PHASES = ["init", "explore", "proposal", "spec", "design", "tas
 
 export const SKILL_RESOLUTIONS = ["injected", "fallback-registry", "fallback-path", "none"] as const;
 
+export const ENVELOPE_EXTRACTION_SOURCES = [
+  "raw-json",
+  "pi-jsonl-assistant",
+  "fenced-json",
+  "plain-text-fallback",
+  "none",
+] as const;
+
 export type RunStatus = (typeof RUN_STATUSES)[number];
 export type SddPhase = (typeof SDD_PHASES)[number];
 export type SkillResolution = (typeof SKILL_RESOLUTIONS)[number];
+export type EnvelopeExtractionSource = (typeof ENVELOPE_EXTRACTION_SOURCES)[number];
 
 export interface WorkerEnvelope {
   status: RunStatus;
@@ -42,6 +51,165 @@ export interface EnvelopeParseFailure {
 export type EnvelopeParseResult<TEnvelope extends DelegationEnvelope = DelegationEnvelope> =
   | EnvelopeParseSuccess<TEnvelope>
   | EnvelopeParseFailure;
+
+export interface EnvelopeExtraction {
+  text: string;
+  source: EnvelopeExtractionSource;
+}
+
+export const EMPTY_ENVELOPE_EXTRACTION: EnvelopeExtraction = Object.freeze({
+  text: "",
+  source: "none",
+});
+
+export function extractEnvelopeCandidate(raw: string): EnvelopeExtraction {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return EMPTY_ENVELOPE_EXTRACTION;
+  }
+
+  if (isLikelyJsonObject(trimmed)) {
+    return { text: trimmed, source: "raw-json" };
+  }
+
+  const assistantText = extractLastAssistantTextFromPiJSON(raw);
+  if (assistantText && isLikelyJsonObject(assistantText.trim())) {
+    return { text: assistantText.trim(), source: "pi-jsonl-assistant" };
+  }
+
+  const fenced = extractFencedJsonObject(raw);
+  if (fenced !== null) {
+    return { text: fenced, source: "fenced-json" };
+  }
+
+  const wrapped = extractSingleJsonObjectInHarmlessProse(raw);
+  if (wrapped !== null) {
+    return { text: wrapped, source: "plain-text-fallback" };
+  }
+
+  return EMPTY_ENVELOPE_EXTRACTION;
+}
+
+function isLikelyJsonObject(text: string): boolean {
+  try {
+    const parsed = JSON.parse(text);
+    return isRecord(parsed);
+  } catch {
+    return false;
+  }
+}
+
+function extractLastAssistantTextFromPiJSON(raw: string): string | null {
+  let lastAssistantText: string | null = null;
+
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmedLine = line.trim();
+    if (!trimmedLine) continue;
+
+    let event: unknown;
+    try {
+      event = JSON.parse(trimmedLine);
+    } catch {
+      continue;
+    }
+
+    if (!isRecord(event) || event.type !== "message_end") continue;
+    const message = event.message;
+    if (!isRecord(message) || message.role !== "assistant" || !Array.isArray(message.content)) continue;
+
+    const text = message.content
+      .filter(
+        (part): part is { type: string; text: string } =>
+          isRecord(part) && part.type === "text" && typeof part.text === "string",
+      )
+      .map((part) => part.text)
+      .join("\n")
+      .trim();
+
+    if (text) {
+      lastAssistantText = text;
+    }
+  }
+
+  return lastAssistantText;
+}
+
+function extractFencedJsonObject(raw: string): string | null {
+  const FENCE_PATTERN = /```(?:[A-Za-z0-9_+\-]*)?[ \t]*\r?\n([\s\S]*?)\r?\n```/g;
+  const candidates: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = FENCE_PATTERN.exec(raw)) !== null) {
+    const inner = match[1];
+    if (inner == null) continue;
+    const trimmedInner = inner.trim();
+    if (!trimmedInner) continue;
+    try {
+      const parsed = JSON.parse(trimmedInner);
+      if (isRecord(parsed)) {
+        candidates.push(trimmedInner);
+      }
+    } catch {
+      // not a JSON object, ignore this fence
+    }
+  }
+
+  if (candidates.length === 1) {
+    return candidates[0];
+  }
+  return null;
+}
+
+function extractSingleJsonObjectInHarmlessProse(raw: string): string | null {
+  const candidates: string[] = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escape = false;
+
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+    if (escape) {
+      escape = false;
+      continue;
+    }
+    if (inString) {
+      if (ch === "\\") {
+        escape = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === "}") {
+      if (depth === 0) continue;
+      depth--;
+      if (depth === 0 && start >= 0) {
+        const span = raw.slice(start, i + 1);
+        try {
+          const parsed = JSON.parse(span);
+          if (isRecord(parsed)) {
+            candidates.push(span);
+          }
+        } catch {
+          // invalid top-level span, skip
+        }
+        start = -1;
+      }
+    }
+  }
+
+  if (candidates.length === 1) {
+    return candidates[0];
+  }
+  return null;
+}
 
 export function parseEnvelope(raw: string): EnvelopeParseResult {
   const trimmed = raw.trim();

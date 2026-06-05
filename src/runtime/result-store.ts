@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { DelegationEnvelope, RunStatus } from "./envelopes.ts";
-import { parseEnvelope } from "./envelopes.ts";
+import type { DelegationEnvelope, EnvelopeExtractionSource, RunStatus } from "./envelopes.ts";
+import { extractEnvelopeCandidate, parseEnvelope } from "./envelopes.ts";
 
 export interface CreateRunRecordInput {
   rootDir: string;
@@ -39,6 +39,7 @@ export interface StoredRunStatus {
   summary?: string;
   envelopeKind?: "worker" | "sdd";
   parseError?: string;
+  parseSource?: Exclude<EnvelopeExtractionSource, "raw-json" | "none">;
 }
 
 export interface StoredRunResult {
@@ -48,6 +49,7 @@ export interface StoredRunResult {
   rawOutputPath?: string;
   stderrPath?: string;
   parseError?: string;
+  parseSource?: Exclude<EnvelopeExtractionSource, "raw-json" | "none">;
 }
 
 export interface RecoveredRun {
@@ -158,45 +160,7 @@ export function recoverRun(runDir: string): RecoveredRun {
 }
 
 export function extractEnvelopeOutput(rawOutput: string): string {
-  const direct = parseEnvelope(rawOutput);
-  if (direct.ok) {
-    return rawOutput;
-  }
-
-  const fromPiJSON = extractLastAssistantTextFromPiJSON(rawOutput);
-  return fromPiJSON ?? rawOutput;
-}
-
-function extractLastAssistantTextFromPiJSON(rawOutput: string): string | null {
-  let lastAssistantText: string | null = null;
-
-  for (const line of rawOutput.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-
-    let event: unknown;
-    try {
-      event = JSON.parse(trimmed);
-    } catch {
-      continue;
-    }
-
-    if (!isRecord(event) || event.type !== "message_end") continue;
-    const message = event.message;
-    if (!isRecord(message) || message.role !== "assistant" || !Array.isArray(message.content)) continue;
-
-    const text = message.content
-      .filter((part): part is { type: string; text: string } => isRecord(part) && part.type === "text" && typeof part.text === "string")
-      .map((part) => part.text)
-      .join("\n")
-      .trim();
-
-    if (text) {
-      lastAssistantText = text;
-    }
-  }
-
-  return lastAssistantText;
+  return extractEnvelopeCandidate(rawOutput).text;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -209,8 +173,31 @@ function buildStoredRunArtifacts(input: {
   rawOutputPath: string;
   stderrPath?: string;
 }): { status: StoredRunStatus; result: StoredRunResult } {
-  const parsed = parseEnvelope(extractEnvelopeOutput(input.rawOutput));
+  const candidate = extractEnvelopeCandidate(input.rawOutput);
+
+  if (candidate.source === "none") {
+    const parseError =
+      "Could not extract a single envelope JSON object from child output: expected strict JSON, Pi JSONL assistant text, one fenced JSON block, or harmless prose wrapping exactly one envelope object.";
+    return {
+      status: {
+        status: "failed",
+        updatedAt: input.updatedAt,
+        parseError,
+      },
+      result: {
+        status: "failed",
+        updatedAt: input.updatedAt,
+        rawOutputPath: input.rawOutputPath,
+        ...(input.stderrPath ? { stderrPath: input.stderrPath } : {}),
+        parseError,
+      },
+    };
+  }
+
+  const parsed = parseEnvelope(candidate.text);
   const invalidFinalStateError = "Final child envelope cannot use status 'running'; use completed, needs_user_input, or failed.";
+
+  const recordedSource = candidate.source === "raw-json" ? undefined : candidate.source;
 
   if (parsed.ok && parsed.envelope.status !== "running") {
     return {
@@ -219,6 +206,7 @@ function buildStoredRunArtifacts(input: {
         updatedAt: input.updatedAt,
         summary: parsed.envelope.summary,
         envelopeKind: parsed.kind,
+        ...(recordedSource ? { parseSource: recordedSource } : {}),
       },
       result: {
         status: parsed.envelope.status,
@@ -226,6 +214,7 @@ function buildStoredRunArtifacts(input: {
         envelope: parsed.envelope,
         rawOutputPath: input.rawOutputPath,
         ...(input.stderrPath ? { stderrPath: input.stderrPath } : {}),
+        ...(recordedSource ? { parseSource: recordedSource } : {}),
       },
     };
   }

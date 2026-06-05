@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseEnvelope, validateSddEnvelope, validateWorkerEnvelope } from "../src/runtime/envelopes.ts";
+import { extractEnvelopeCandidate, parseEnvelope, validateSddEnvelope, validateWorkerEnvelope } from "../src/runtime/envelopes.ts";
 
 test("validateWorkerEnvelope accepts strict worker JSON with no phase", () => {
   const result = validateWorkerEnvelope({
@@ -192,5 +192,167 @@ test("validateSddEnvelope rejects unsupported keys for strict contracts", () => 
   assert.equal(result.ok, false);
   if (!result.ok) {
     assert.match(result.error, /unsupported keys/i);
+  }
+});
+
+const BASE_WORKER_ENVELOPE = {
+  status: "completed",
+  summary: "smoke",
+  artifacts: [],
+  files: [],
+  validations: [],
+  next_step: null,
+  continuation: null,
+  question: null,
+  options: [],
+  risks: [],
+  skill_resolution: "none",
+} as const;
+
+function envelopeString(): string {
+  return JSON.stringify(BASE_WORKER_ENVELOPE);
+}
+
+test("extractEnvelopeCandidate returns raw-json for strict single-object output", () => {
+  const result = extractEnvelopeCandidate(envelopeString());
+  assert.equal(result.source, "raw-json");
+  assert.equal(result.text, envelopeString());
+});
+
+test("extractEnvelopeCandidate returns raw-json for strict SDD envelopes with phase", () => {
+  const sddEnvelope = JSON.stringify({ ...BASE_WORKER_ENVELOPE, phase: "apply" });
+  const result = extractEnvelopeCandidate(sddEnvelope);
+  assert.equal(result.source, "raw-json");
+  assert.equal(result.text, sddEnvelope);
+});
+
+test("extractEnvelopeCandidate returns pi-jsonl-assistant for Pi JSONL message streams", () => {
+  const envelope = envelopeString();
+  const raw = [
+    JSON.stringify({ type: "session", id: "session-1" }),
+    JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: envelope }] } }),
+  ].join("\n");
+  const result = extractEnvelopeCandidate(raw);
+  assert.equal(result.source, "pi-jsonl-assistant");
+  assert.equal(result.text, envelope);
+});
+
+test("extractEnvelopeCandidate returns fenced-json for a single fenced JSON block", () => {
+  const envelope = envelopeString();
+  const raw = `Here is the final answer:\n\n\`\`\`json\n${envelope}\n\`\`\`\n`;
+  const result = extractEnvelopeCandidate(raw);
+  assert.equal(result.source, "fenced-json");
+  assert.equal(result.text, envelope);
+});
+
+test("extractEnvelopeCandidate returns fenced-json for a fenced block with no language tag", () => {
+  const envelope = envelopeString();
+  const raw = `\`\`\`\n${envelope}\n\`\`\``;
+  const result = extractEnvelopeCandidate(raw);
+  assert.equal(result.source, "fenced-json");
+  assert.equal(result.text, envelope);
+});
+
+test("extractEnvelopeCandidate picks the last fenced JSON block when exactly one parses as an object", () => {
+  const envelope = envelopeString();
+  const raw = `\`\`\`json\n{"example": true}\n\`\`\`\n\nFinal result:\n\n\`\`\`json\n${envelope}\n\`\`\`\n`;
+  const result = extractEnvelopeCandidate(raw);
+  // Two fenced blocks: {"example": true} is not a valid envelope object but DOES parse as object, so the spec rejects (multiple).
+  assert.equal(result.source, "none");
+  assert.equal(result.text, "");
+});
+
+test("extractEnvelopeCandidate returns plain-text-fallback for harmless prose wrapping exactly one envelope", () => {
+  const envelope = envelopeString();
+  const raw = `Sure, here is the final envelope:\n\n${envelope}\n\nThanks!`;
+  const result = extractEnvelopeCandidate(raw);
+  assert.equal(result.source, "plain-text-fallback");
+  assert.equal(result.text, envelope);
+});
+
+test("extractEnvelopeCandidate returns plain-text-fallback for prose with leading markdown", () => {
+  const envelope = envelopeString();
+  const raw = `# Summary\n\nAll done.\n\n${envelope}`;
+  const result = extractEnvelopeCandidate(raw);
+  assert.equal(result.source, "plain-text-fallback");
+  assert.equal(result.text, envelope);
+});
+
+test("extractEnvelopeCandidate returns none for multiple top-level JSON objects in prose", () => {
+  const envelope = envelopeString();
+  const raw = `First draft: {"a":1}\nFinal: ${envelope}`;
+  const result = extractEnvelopeCandidate(raw);
+  assert.equal(result.source, "none");
+  assert.equal(result.text, "");
+});
+
+test("extractEnvelopeCandidate returns none for multiple fenced JSON blocks that parse as objects", () => {
+  const envelope = envelopeString();
+  const raw = `\`\`\`json\n${envelope}\n\`\`\`\nThen:\n\`\`\`json\n${envelope}\n\`\`\`\n`;
+  const result = extractEnvelopeCandidate(raw);
+  assert.equal(result.source, "none");
+  assert.equal(result.text, "");
+});
+
+test("extractEnvelopeCandidate returns fenced-json when a fenced block wins by priority even if prose also contains an object", () => {
+  const envelope = envelopeString();
+  const raw = `\`\`\`json\n${envelope}\n\`\`\`\nPlus extra prose with another object: ${envelope}`;
+  // Priority: fenced-json wins when exactly one fenced block parses. Prose is not consulted after a fenced candidate resolves.
+  const result = extractEnvelopeCandidate(raw);
+  assert.equal(result.source, "fenced-json");
+  assert.equal(result.text, envelope);
+});
+
+test("extractEnvelopeCandidate returns none for malformed-only output", () => {
+  const result = extractEnvelopeCandidate("not valid json");
+  assert.equal(result.source, "none");
+  assert.equal(result.text, "");
+});
+
+test("extractEnvelopeCandidate returns none for empty input", () => {
+  const result = extractEnvelopeCandidate("   \n  ");
+  assert.equal(result.source, "none");
+  assert.equal(result.text, "");
+});
+
+test("extractEnvelopeCandidate tolerates JSON object containing braces inside string values", () => {
+  const envelope = JSON.stringify({
+    ...BASE_WORKER_ENVELOPE,
+    summary: "code: {not: json} and more",
+  });
+  const raw = `Prose preamble.\n\n${envelope}\n\nClosing line.`;
+  const result = extractEnvelopeCandidate(raw);
+  assert.equal(result.source, "plain-text-fallback");
+  assert.equal(result.text, envelope);
+});
+
+test("parseEnvelope still rejects a fenced JSON block (strict validator)", () => {
+  const envelope = envelopeString();
+  const result = parseEnvelope(`\`\`\`json\n${envelope}\n\`\`\``);
+  // The schema validator is strict: it does not strip fences. Tolerance happens in the candidate extractor.
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.match(result.error, /single JSON object/i);
+  }
+});
+
+test("parseEnvelope still rejects harmless-wrapped envelope (strict validator)", () => {
+  const envelope = envelopeString();
+  const result = parseEnvelope(`Here it is:\n\n${envelope}\nThanks!`);
+  assert.equal(result.ok, false);
+  if (!result.ok) {
+    assert.match(result.error, /single JSON object/i);
+  }
+});
+
+test("parseEnvelope validates a candidate extracted by the new extractor end-to-end", () => {
+  const envelope = JSON.stringify({ ...BASE_WORKER_ENVELOPE, phase: "apply" });
+  const raw = `Here you go:\n\n\`\`\`json\n${envelope}\n\`\`\`\n\nDone.`;
+  const candidate = extractEnvelopeCandidate(raw);
+  const parsed = parseEnvelope(candidate.text);
+  assert.equal(parsed.ok, true);
+  if (parsed.ok) {
+    assert.equal(parsed.kind, "sdd");
+    assert.equal(parsed.envelope.status, "completed");
   }
 });

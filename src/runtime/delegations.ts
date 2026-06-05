@@ -16,24 +16,24 @@ import {
   type EnvelopeKind,
 } from "./envelopes.ts";
 
-export const LORE_MEMORY_EXTENSION_PATH = path.join(os.homedir(), ".pi", "agent", "extensions", "lore-memory.ts");
 export const DEFAULT_DELEGATIONS_ROOT = path.join(os.homedir(), ".local", "share", "lore", "pi", "delegations");
 export const DELEGATIONS_ROOT_ENV = "LORE_PI_RUNTIME_RUN_ROOT";
 export const PI_COMMAND_ENV = "LORE_PI_RUNTIME_PI_COMMAND";
 export const MAX_CAPTURED_STREAM_BYTES = 8 * 1024 * 1024;
 
-export const LORE_MEMORY_TOOL_BUNDLE = "lore:*";
-export const LORE_MEMORY_TOOLS = [
-  "lore_search",
-  "lore_save",
-  "lore_get_observation",
-  "lore_context",
-  "lore_project_list",
-  "lore_project_create",
-  "lore_project_get",
-  "lore_skill_save",
-  "lore_skill_list",
-  "lore_skill_get",
+/**
+ * Canonical MCP Lore Server memory tool names. The runtime no longer
+ * autoloads the deprecated Pi-native `lore-memory.ts` extension; memory
+ * operations are exposed to child agents through the orchestrator's MCP
+ * configuration under the `lore_memory_*` namespace.
+ */
+export const MCP_LORE_MEMORY_TOOLS = [
+  "lore_memory_search",
+  "lore_memory_get",
+  "lore_memory_save",
+  "lore_memory_update",
+  "lore_memory_list_projects",
+  "lore_memory_list_skills",
 ] as const;
 
 export interface StartDelegationInput {
@@ -112,7 +112,7 @@ export async function startDelegation(input: StartDelegationInput): Promise<Star
   });
 
   const childPolicy = getDelegationRuntimePolicy();
-  const childTools = expandAgentTools([...(agent.tools ?? []), ...LORE_MEMORY_TOOLS, ...childPolicy.childOnlyTools]);
+  const childTools = expandAgentTools([...(agent.tools ?? []), ...MCP_LORE_MEMORY_TOOLS, ...childPolicy.childOnlyTools]);
 
   const launch = await launchChildProcess({
     cwd,
@@ -228,8 +228,7 @@ export function expandAgentTools(tools: string[]): string[] {
   const seen = new Set<string>();
 
   for (const tool of tools) {
-    const candidateTools = tool === LORE_MEMORY_TOOL_BUNDLE ? [...LORE_MEMORY_TOOLS] : [tool];
-    for (const candidate of candidateTools) {
+    for (const candidate of [tool]) {
       if (parentOnly.has(candidate)) {
         continue;
       }
@@ -337,13 +336,16 @@ function canonicalFinalStatuses(): string {
   return RUN_STATUSES.filter((status) => status !== "running").join(", ");
 }
 
-function discoverChildExtensions(): string[] {
+export function discoverChildExtensions(): string[] {
+  // The Pi-native `lore-memory.ts` extension was removed from active runtime
+  // paths. Memory operations are exposed to child agents through the
+  // orchestrator's MCP `lore_memory_*` configuration instead. Only the
+  // current runtime extension is autoloaded; `lore-footer.ts` (the only
+  // retained optional Pi extension) is delivered by the install package and
+  // is intentionally not autoloaded here so the runtime stays free of
+  // ambient filesystem state.
   const currentExtensionPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../extension/index.ts");
-  const extensions = [currentExtensionPath];
-  if (fs.existsSync(LORE_MEMORY_EXTENSION_PATH)) {
-    extensions.push(LORE_MEMORY_EXTENSION_PATH);
-  }
-  return extensions;
+  return [currentExtensionPath];
 }
 
 export async function finalizeChildRun(
