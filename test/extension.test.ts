@@ -664,15 +664,7 @@ test("child prompt forbids final running envelopes", () => {
   assert.doesNotMatch(sddPrompt, /status must be one of: completed, running, needs_user_input, failed/i);
 });
 
-test("shipped builtin prompts teach the canonical MCP lore_memory_* surface and do not advertise lore-memory.ts as active", () => {
-  // Focused guard for the fix-pi-envelope-tolerance-and-remove-lore-memory
-  // change: every shipped builtin prompt MUST point memory operations at
-  // the canonical MCP `lore_memory_*` tool surface, MUST explicitly mark
-  // the Pi-native `lore-memory.ts` extension as removed/unavailable, and
-  // MUST teach the canonical Pi JSON envelope as the only valid final
-  // output format. Fenced JSON and plain-text fallback envelopes are
-  // runtime recovery behavior only and MUST NOT be advertised as the
-  // preferred child contract.
+test("shipped builtin prompts teach dual Lore MCP surfaces before fallback without legacy dependencies", () => {
   const promptFiles = fs
     .readdirSync("agents", { withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
@@ -684,35 +676,29 @@ test("shipped builtin prompts teach the canonical MCP lore_memory_* surface and 
   for (const promptFile of promptFiles) {
     const body = fs.readFileSync(promptFile, "utf8");
 
-    // Every prompt must teach the canonical MCP lore_memory_* tool surface.
-    assert.match(
-      body,
-      /MCP Lore Server tools \(`lore_memory_\*`\)/i,
-      `${promptFile} must teach the canonical MCP lore_memory_* tool surface`,
-    );
-    assert.match(
-      body,
-      /`lore_memory_search`/,
-      `${promptFile} must mention the canonical lore_memory_search tool`,
-    );
-    assert.match(
-      body,
-      /`lore_memory_get`/,
-      `${promptFile} must mention the canonical lore_memory_get tool`,
-    );
+    for (const tool of [
+      "lore_memory_search",
+      "lore_memory_get",
+      "lore_memory_save",
+      "lore_lore_memory_search",
+      "lore_lore_memory_get",
+      "lore_lore_memory_save",
+      "lore_lore_project_activity",
+      "lore_lore_project_context",
+      "lore_lore_project_list",
+    ]) {
+      assert.ok(body.includes(`\`${tool}\``), `${promptFile} must mention ${tool}`);
+    }
 
-    // Every prompt must explicitly mark lore-memory.ts as removed.
-    assert.match(
-      body,
-      /`lore-memory\.ts` extension (was|has been) removed/i,
-      `${promptFile} must explicitly mark lore-memory.ts as removed`,
-    );
-    // The prompt must NOT teach lore-memory.ts as a still-active extension.
-    assert.doesNotMatch(
-      body,
-      /MUST use `lore-memory\.ts`|use `lore-memory\.ts` for|load `lore-memory\.ts`/i,
-      `${promptFile} must not advertise lore-memory.ts as an active runtime path`,
-    );
+    if (promptFile.includes(`sdd-`)) {
+      assert.match(body, /Try either Lore surface before OpenSpec fallback/i, `${promptFile} must prefer Lore before OpenSpec fallback`);
+    }
+
+    assert.match(body, /stable title\/topic-key upsert semantics/i, `${promptFile} must teach save/upsert persistence`);
+    assert.match(body, /`lore_lore_memory_update` is not part of the observed current MCP surface/i, `${promptFile} must not require prefixed memory update`);
+    assert.match(body, /`lore-memory\.ts`;? it was removed and is not available/i, `${promptFile} must explicitly mark lore-memory.ts as removed`);
+    assert.doesNotMatch(body, /MUST use `lore-memory\.ts`|use `lore-memory\.ts` for|load `lore-memory\.ts`/i, `${promptFile} must not advertise lore-memory.ts as active`);
+    assert.doesNotMatch(body, /`delegate`|`delegation_read`|`delegation_list`/, `${promptFile} must not expose parent-only delegation tools in child guidance`);
 
     // The canonical Pi JSON envelope is the only valid final output format.
     assert.match(
@@ -883,8 +869,15 @@ test("delegate grants lore memory tools to every child before launching", async 
         "lore_memory_update",
         "lore_memory_list_projects",
         "lore_memory_list_skills",
+        "lore_lore_memory_search",
+        "lore_lore_memory_get",
+        "lore_lore_memory_save",
+        "lore_lore_project_list",
+        "lore_lore_project_context",
+        "lore_lore_project_activity",
         "contact_supervisor",
       ]);
+      assert.equal(tools.includes("lore_lore_memory_update"), false);
       assert.equal(tools.includes("lore:*"), false);
       assert.equal(tools.includes("delegate"), false);
       assert.equal(tools.includes("delegation_read"), false);

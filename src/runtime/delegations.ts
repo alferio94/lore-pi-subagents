@@ -22,18 +22,38 @@ export const PI_COMMAND_ENV = "LORE_PI_RUNTIME_PI_COMMAND";
 export const MAX_CAPTURED_STREAM_BYTES = 8 * 1024 * 1024;
 
 /**
- * Canonical MCP Lore Server memory tool names. The runtime no longer
- * autoloads the deprecated Pi-native `lore-memory.ts` extension; memory
- * operations are exposed to child agents through the orchestrator's MCP
- * configuration under the `lore_memory_*` namespace.
+ * Canonical flat MCP Lore Server compatibility tool names. The runtime no
+ * longer autoloads the deprecated Pi-native `lore-memory.ts` extension;
+ * memory operations are exposed to child agents through explicitly allowed
+ * MCP tools instead.
  */
-export const MCP_LORE_MEMORY_TOOLS = [
+export const FLAT_LORE_MCP_TOOLS = [
   "lore_memory_search",
   "lore_memory_get",
   "lore_memory_save",
   "lore_memory_update",
   "lore_memory_list_projects",
   "lore_memory_list_skills",
+] as const;
+
+/**
+ * Observed harness-prefixed Lore MCP tool names used by the active Lore MCP
+ * server for SDD artifact persistence and project orientation. Do not add
+ * `lore_lore_memory_update`: the observed MCP surface uses save/topic-key
+ * upsert semantics instead.
+ */
+export const OBSERVED_PREFIXED_LORE_MCP_TOOLS = [
+  "lore_lore_memory_search",
+  "lore_lore_memory_get",
+  "lore_lore_memory_save",
+  "lore_lore_project_list",
+  "lore_lore_project_context",
+  "lore_lore_project_activity",
+] as const;
+
+export const MCP_LORE_MEMORY_TOOLS = [
+  ...FLAT_LORE_MCP_TOOLS,
+  ...OBSERVED_PREFIXED_LORE_MCP_TOOLS,
 ] as const;
 
 export interface StartDelegationInput {

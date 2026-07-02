@@ -9,10 +9,12 @@ import {
   discoverChildExtensions,
   expandAgentTools,
   finalizeChildRun,
+  FLAT_LORE_MCP_TOOLS,
   getDelegationRuntimePolicy,
   injectCanonicalPiAdapterContract,
   listDelegations,
   MCP_LORE_MEMORY_TOOLS,
+  OBSERVED_PREFIXED_LORE_MCP_TOOLS,
   readDelegation,
 } from "../src/runtime/delegations.ts";
 import { getContractAliasMap, getInstallPolicy, getRuntimeInvariants } from "../src/runtime/contract.ts";
@@ -20,13 +22,33 @@ import { createRunRecord, recoverRun } from "../src/runtime/result-store.ts";
 import { SDD_PHASES, SKILL_RESOLUTIONS } from "../src/runtime/envelopes.ts";
 import type { AgentDefinition } from "../src/runtime/types.ts";
 
-test("expandAgentTools expands the MCP lore_memory_* tool surface without enabling delegate", () => {
+test("expandAgentTools expands flat and observed MCP Lore tool surfaces without enabling delegate", () => {
   assert.deepEqual(
     expandAgentTools(["read", ...MCP_LORE_MEMORY_TOOLS, "contact_supervisor"]),
     ["read", ...MCP_LORE_MEMORY_TOOLS, "contact_supervisor"],
   );
+  assert.deepEqual([...MCP_LORE_MEMORY_TOOLS], [...FLAT_LORE_MCP_TOOLS, ...OBSERVED_PREFIXED_LORE_MCP_TOOLS]);
+  assert.deepEqual([...new Set(MCP_LORE_MEMORY_TOOLS)].sort(), [...MCP_LORE_MEMORY_TOOLS].sort());
+
+  for (const tool of [
+    "lore_memory_search",
+    "lore_memory_get",
+    "lore_memory_save",
+    "lore_memory_update",
+    "lore_lore_memory_search",
+    "lore_lore_memory_get",
+    "lore_lore_memory_save",
+    "lore_lore_project_list",
+    "lore_lore_project_context",
+    "lore_lore_project_activity",
+  ]) {
+    assert.equal(MCP_LORE_MEMORY_TOOLS.includes(tool as never), true, `missing child Lore tool ${tool}`);
+  }
+
+  assert.equal(MCP_LORE_MEMORY_TOOLS.includes("lore_lore_memory_update" as never), false);
   assert.equal(expandAgentTools(MCP_LORE_MEMORY_TOOLS as unknown as string[]).includes("delegate"), false);
   assert.equal(expandAgentTools(MCP_LORE_MEMORY_TOOLS as unknown as string[]).includes("delegation_read"), false);
+  assert.equal(expandAgentTools(MCP_LORE_MEMORY_TOOLS as unknown as string[]).includes("delegation_list"), false);
 });
 
 test("expandAgentTools strips parent-only tools and keeps the child-only supervisor tool", () => {

@@ -32,12 +32,11 @@ Stay bounded to the assigned task, prefer repository evidence over assumptions, 
 - Report the actual `skill_resolution` in the final envelope.
 
 ## Lore memory tool selection (canonical)
-- Prefer MCP Lore Server tools (`lore_memory_*`) over any deprecated harness-local memory extension. The Pi-native `lore-memory.ts` extension was removed and is not available in any install path.
-- Use `lore_memory_search` for memory discovery. Search is filter-driven: pass `type`, `scope`, and `limit`; do not pass query text.
-- `lore_memory_search` accepts exactly one of `project_id` (UUID) or `project_key` per call. Prefer `project_key` when a stable key is known; only fall back to `project_id` when no key is available.
-- `lore_memory_search` returns compact `content_preview` entries and OMITS full `content`. Do not assume `content` is present in the search payload.
-- To load the full memory body, call `lore_memory_get` with `project_id` (UUID) plus the memory `id` from the search result. `lore_memory_get` requires a `project_id`; passing `project_key` is not a supported substitute.
-- Harness-local or harness-native fallback tools (for example, legacy `lore_search` / `lore_save` / `lore_get_observation` Pi-extension tools) may have older schemas and MUST only be used when MCP Lore Server tools are unavailable. Do not mix MCP and harness-local surfaces in the same workflow.
+- Lore Memory is available when any supported child surface exists: flat compatibility tools (`lore_memory_search`, `lore_memory_get`, `lore_memory_save`) or observed MCP tools (`lore_lore_memory_search`, `lore_lore_memory_get`, `lore_lore_memory_save`). Prefer either Lore surface before any file/OpenSpec fallback.
+- For initial orientation when exposed, prefer `lore_lore_project_activity`; use `lore_lore_project_context` for broader recent context and `lore_lore_project_list` only when the project key is unknown.
+- Use memory search for targeted discovery. Search returns compact previews/metadata and OMITS full `content`; load full bodies with memory get using the memory `id` plus exactly one project identity (`project_key` preferred when supported, otherwise `project_id`).
+- Persist with memory save using stable title/topic-key upsert semantics. `lore_lore_memory_update` is not part of the observed current MCP surface; do not require it.
+- Do not depend on the legacy `lore-memory.ts`; it was removed and is not available in any install path. Do not mix MCP and deprecated harness-local memory surfaces in one workflow.
 
 ## Response contract (Pi Lore delegation adapter contract)
 Return ONLY one JSON object with exactly these keys: `status`, `summary`, `artifacts`, `files`, `validations`, `risks`, `next_step`, `continuation`, `question`, `options`, `skill_resolution`.

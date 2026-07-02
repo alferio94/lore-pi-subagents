@@ -28,8 +28,8 @@ npm test
 - Builtin aliases `reviewer`, `researcher`, `scribe`, and `general` all resolve to `lore-worker` through the packaged contract.
 
 ## Install policy notes
-- Retained companion extensions: `lore-memory.ts` and `lore-footer.ts`.
-- Legacy replacement policy: `lore-delegation.ts` is treated as a blocked legacy extension and is not re-declared as an active managed runtime extension.
+- Retained companion extension: `lore-footer.ts`.
+- Removed/blocked legacy extensions: `lore-memory.ts` and `lore-delegation.ts` are not active runtime dependencies.
 - Installer integration is intentionally deferred: this package publishes the contract now, but does not implement `lore-cli install --target pi` consumption yet.
 
 ## Notes
@@ -38,4 +38,4 @@ npm test
 - `/lore-models` edits one routing target at a time: choose default/agent, then model, then thinking, then save or back out.
 - `delegation_list` now returns readable per-run id/agent/status/summary/updatedAt lines, and `delegation_read` points to persisted raw/stderr files when a child response is malformed.
 - Child agents must return a single strict JSON envelope, including `skill_resolution`, so persisted runs remain machine-readable.
-- Child agents always receive Lore memory tools: `lore_search`, `lore_save`, `lore_get_observation`, `lore_context`, project tools, and skill tools. This does not grant `delegate`, `delegation_read`, or `delegation_list` to child runtimes.
+- Child agents receive Lore Memory when either flat compatibility tools (`lore_memory_search`, `lore_memory_get`, `lore_memory_save`) or observed MCP tools (`lore_lore_memory_search`, `lore_lore_memory_get`, `lore_lore_memory_save`) are available. Project helpers may include `lore_lore_project_list`, `lore_lore_project_context`, and `lore_lore_project_activity`. `lore_lore_memory_update` is not required; workers use save/upsert semantics. This does not grant `delegate`, `delegation_read`, or `delegation_list` to child runtimes.
