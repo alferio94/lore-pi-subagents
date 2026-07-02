@@ -7,6 +7,7 @@ import { getInstallPolicy, getRuntimeInvariants, resolveBuiltinAgentName } from 
 import type { AgentDefinition, AgentRegistry } from "./types.ts";
 import { isSddAgent, readModelRoutingConfig, resolveModelRoute } from "./model-routing.ts";
 import { launchChildProcess } from "./child-launch.ts";
+import { resolveApprovedChildMcpAdapterExtensions } from "./child-mcp-adapter.ts";
 import { createRunRecord, recoverRun, storeRunOutput, type RecoveredRun, type RunRecord } from "./result-store.ts";
 import {
   RUN_STATUSES,
@@ -55,6 +56,13 @@ export const MCP_LORE_MEMORY_TOOLS = [
   ...FLAT_LORE_MCP_TOOLS,
   ...OBSERVED_PREFIXED_LORE_MCP_TOOLS,
 ] as const;
+
+/**
+ * Broad MCP gateway exposed only when the approved pi-mcp-adapter extension is
+ * explicitly loaded for a child. Kept separate from direct Lore tool names so
+ * the wider capability is visible and can be narrowed later.
+ */
+export const CHILD_MCP_GATEWAY_TOOLS = ["mcp"] as const;
 
 export interface StartDelegationInput {
   registry: AgentRegistry;
@@ -132,7 +140,15 @@ export async function startDelegation(input: StartDelegationInput): Promise<Star
   });
 
   const childPolicy = getDelegationRuntimePolicy();
-  const childTools = expandAgentTools([...(agent.tools ?? []), ...MCP_LORE_MEMORY_TOOLS, ...childPolicy.childOnlyTools]);
+  const approvedAdapterExtensions = resolveApprovedChildMcpAdapterExtensions();
+  const childExtensions = dedupePaths([...discoverChildExtensions(), ...approvedAdapterExtensions]);
+  const hasMcpAdapter = approvedAdapterExtensions.length > 0;
+  const childTools = expandAgentTools([
+    ...(agent.tools ?? []),
+    ...MCP_LORE_MEMORY_TOOLS,
+    ...(hasMcpAdapter ? CHILD_MCP_GATEWAY_TOOLS : []),
+    ...childPolicy.childOnlyTools,
+  ]);
 
   const launch = await launchChildProcess({
     cwd,
@@ -142,7 +158,7 @@ export async function startDelegation(input: StartDelegationInput): Promise<Star
     canonicalAgent: agent.name,
     runDir: record.runDir,
     tools: childTools,
-    extensionSources: discoverChildExtensions(),
+    extensionSources: childExtensions,
     systemPrompt: buildChildSystemPrompt(agent),
     systemPromptMode: agent.systemPromptMode,
     inheritProjectContext: agent.inheritProjectContext,
@@ -356,16 +372,26 @@ function canonicalFinalStatuses(): string {
   return RUN_STATUSES.filter((status) => status !== "running").join(", ");
 }
 
-export function discoverChildExtensions(): string[] {
+export function discoverChildExtensions(env: NodeJS.ProcessEnv = process.env): string[] {
   // The Pi-native `lore-memory.ts` extension was removed from active runtime
-  // paths. Memory operations are exposed to child agents through the
-  // orchestrator's MCP `lore_memory_*` configuration instead. Only the
-  // current runtime extension is autoloaded; `lore-footer.ts` (the only
-  // retained optional Pi extension) is delivered by the install package and
-  // is intentionally not autoloaded here so the runtime stays free of
-  // ambient filesystem state.
+  // paths. Memory operations are exposed to child agents through the approved
+  // MCP adapter when installed, or through OpenSpec fallback when absent. The
+  // current runtime extension is always loaded explicitly; ambient Pi extension
+  // discovery remains disabled by child-launch's `--no-extensions` flag.
   const currentExtensionPath = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../extension/index.ts");
-  return [currentExtensionPath];
+  return dedupePaths([currentExtensionPath, ...resolveApprovedChildMcpAdapterExtensions(env)]);
+}
+
+function dedupePaths(paths: string[]): string[] {
+  const resolved: string[] = [];
+  const seen = new Set<string>();
+  for (const item of paths) {
+    const value = path.resolve(item);
+    if (seen.has(value)) continue;
+    seen.add(value);
+    resolved.push(value);
+  }
+  return resolved;
 }
 
 export async function finalizeChildRun(

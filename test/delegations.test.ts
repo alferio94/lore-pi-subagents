@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { Readable } from "node:stream";
 import {
   buildChildSystemPrompt,
+  CHILD_MCP_GATEWAY_TOOLS,
   discoverChildExtensions,
   expandAgentTools,
   finalizeChildRun,
@@ -17,6 +18,7 @@ import {
   OBSERVED_PREFIXED_LORE_MCP_TOOLS,
   readDelegation,
 } from "../src/runtime/delegations.ts";
+import { resolveApprovedChildMcpAdapterExtensions } from "../src/runtime/child-mcp-adapter.ts";
 import { getContractAliasMap, getInstallPolicy, getRuntimeInvariants } from "../src/runtime/contract.ts";
 import { createRunRecord, recoverRun } from "../src/runtime/result-store.ts";
 import { SDD_PHASES, SKILL_RESOLUTIONS } from "../src/runtime/envelopes.ts";
@@ -56,6 +58,41 @@ test("expandAgentTools strips parent-only tools and keeps the child-only supervi
     expandAgentTools(["delegate", "read", "delegation_read", "contact_supervisor", "contact_supervisor"]),
     ["read", "contact_supervisor"],
   );
+});
+
+test("approved child MCP adapter resolver reads package metadata and deduplicates entries", () => {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "lore-pi-runtime-mcp-adapter-"));
+  const packageDir = path.join(fakeHome, ".pi", "agent", "git", "github.com", "nicobailon", "pi-mcp-adapter");
+  fs.mkdirSync(packageDir, { recursive: true });
+  const indexPath = path.join(packageDir, "index.ts");
+  const nestedPath = path.join(packageDir, "nested", "adapter.ts");
+  fs.mkdirSync(path.dirname(nestedPath), { recursive: true });
+  fs.writeFileSync(indexPath, "// adapter\n", "utf8");
+  fs.writeFileSync(nestedPath, "// nested adapter\n", "utf8");
+  fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({
+    name: "pi-mcp-adapter",
+    pi: { extensions: ["./index.ts", "index.ts", "./missing.ts", "./nested/adapter.ts", "../escape.ts"] },
+  }), "utf8");
+
+  assert.deepEqual(resolveApprovedChildMcpAdapterExtensions({ HOME: fakeHome }), [indexPath, nestedPath]);
+});
+
+test("approved child MCP adapter resolver rejects absent, unreadable, and mismatched metadata", () => {
+  const absentHome = fs.mkdtempSync(path.join(os.tmpdir(), "lore-pi-runtime-mcp-absent-"));
+  assert.deepEqual(resolveApprovedChildMcpAdapterExtensions({ HOME: absentHome }), []);
+
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "lore-pi-runtime-mcp-wrong-"));
+  const packageDir = path.join(fakeHome, ".pi", "agent", "git", "github.com", "nicobailon", "pi-mcp-adapter");
+  fs.mkdirSync(packageDir, { recursive: true });
+  fs.writeFileSync(path.join(packageDir, "index.ts"), "// adapter\n", "utf8");
+  fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({
+    name: "some-other-package",
+    pi: { extensions: ["./index.ts"] },
+  }), "utf8");
+  assert.deepEqual(resolveApprovedChildMcpAdapterExtensions({ HOME: fakeHome }), []);
+
+  fs.writeFileSync(path.join(packageDir, "package.json"), "{not-json", "utf8");
+  assert.deepEqual(resolveApprovedChildMcpAdapterExtensions({ HOME: fakeHome }), []);
 });
 
 test("delegation runtime policy is sourced from the packaged contract", () => {
@@ -102,6 +139,24 @@ test("delegation runtime policy never retains the deprecated lore-memory extensi
   );
 });
 
+test("discoverChildExtensions includes runtime and approved MCP adapter extensions when installed", () => {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "lore-pi-runtime-discover-mcp-"));
+  const packageDir = path.join(fakeHome, ".pi", "agent", "git", "github.com", "nicobailon", "pi-mcp-adapter");
+  fs.mkdirSync(packageDir, { recursive: true });
+  const adapterPath = path.join(packageDir, "index.ts");
+  fs.writeFileSync(adapterPath, "// adapter\n", "utf8");
+  fs.writeFileSync(path.join(packageDir, "package.json"), JSON.stringify({
+    name: "pi-mcp-adapter",
+    pi: { extensions: ["./index.ts"] },
+  }), "utf8");
+
+  const discovered = discoverChildExtensions({ HOME: fakeHome });
+  assert.ok(discovered.some((extensionPath) => extensionPath.endsWith(path.join("src", "extension", "index.ts"))));
+  assert.ok(discovered.includes(adapterPath));
+  assert.equal([...new Set(discovered)].length, discovered.length);
+  assert.deepEqual([...CHILD_MCP_GATEWAY_TOOLS], ["mcp"]);
+});
+
 test("discoverChildExtensions never autoloads the deprecated lore-memory extension", () => {
   // Focused guard: even if a stale `~/.pi/agent/extensions/lore-memory.ts`
   // is left behind by a prior install, the runtime MUST NOT add it to the
@@ -116,7 +171,7 @@ test("discoverChildExtensions never autoloads the deprecated lore-memory extensi
   const previousHome = process.env.HOME;
   process.env.HOME = fakeHome;
   try {
-    const discovered = discoverChildExtensions();
+    const discovered = discoverChildExtensions({ HOME: fakeHome });
     for (const extensionPath of discovered) {
       assert.equal(
         path.basename(extensionPath) === "lore-memory.ts",

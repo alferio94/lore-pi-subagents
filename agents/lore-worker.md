@@ -32,10 +32,12 @@ Stay bounded to the assigned task, prefer repository evidence over assumptions, 
 - Report the actual `skill_resolution` in the final envelope.
 
 ## Lore memory tool selection (canonical)
-- Lore Memory is available when any supported child surface exists: flat compatibility tools (`lore_memory_search`, `lore_memory_get`, `lore_memory_save`) or observed MCP tools (`lore_lore_memory_search`, `lore_lore_memory_get`, `lore_lore_memory_save`). Prefer either Lore surface before any file/OpenSpec fallback.
+- Child isolation keeps ambient extensions disabled. When the approved `pi-mcp-adapter` is explicitly loaded, children may receive the MCP gateway tool `mcp`; otherwise use direct tools if exposed, then file/OpenSpec fallback.
+- Prefer Lore Memory before file/OpenSpec fallback when any supported child surface exists: (1) `mcp` gateway with server `lore`, (2) direct/prefixed tools (`lore_lore_memory_search`, `lore_lore_memory_get`, `lore_lore_memory_save`), or (3) flat compatibility tools (`lore_memory_search`, `lore_memory_get`, `lore_memory_save`).
+- Gateway call shape: `mcp({ server: "lore", tool: "lore_lore_memory_save", args: "{...}" })`; pass `args` as a JSON string and use project helpers such as `lore_lore_project_activity`, `lore_lore_project_context`, and `lore_lore_project_list` as needed.
 - For initial orientation when exposed, prefer `lore_lore_project_activity`; use `lore_lore_project_context` for broader recent context and `lore_lore_project_list` only when the project key is unknown.
 - Use memory search for targeted discovery. Search returns compact previews/metadata and OMITS full `content`; load full bodies with memory get using the memory `id` plus exactly one project identity (`project_key` preferred when supported, otherwise `project_id`).
-- Persist with memory save using stable title/topic-key upsert semantics. `lore_lore_memory_update` is not part of the observed current MCP surface; do not require it.
+- Persist with memory save using stable title/topic-key upsert semantics. `lore_lore_memory_update` is not part of the observed current MCP surface; do not require it; save a new artifact or use backend-supported upsert semantics instead.
 - Do not depend on the legacy `lore-memory.ts`; it was removed and is not available in any install path. Do not mix MCP and deprecated harness-local memory surfaces in one workflow.
 
 ## Response contract (Pi Lore delegation adapter contract)

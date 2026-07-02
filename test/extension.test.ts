@@ -694,8 +694,12 @@ test("shipped builtin prompts teach dual Lore MCP surfaces before fallback witho
       assert.match(body, /Try either Lore surface before OpenSpec fallback/i, `${promptFile} must prefer Lore before OpenSpec fallback`);
     }
 
+    assert.match(body, /approved `pi-mcp-adapter` is explicitly loaded/i, `${promptFile} must describe explicit MCP adapter loading`);
+    assert.match(body, /`mcp` gateway with server `lore`/i, `${promptFile} must prefer the Lore MCP gateway when present`);
+    assert.match(body, /mcp\(\{ server: "lore", tool: "lore_lore_memory_save", args: "\{\.\.\.\}" \}\)/, `${promptFile} must document gateway call shape with JSON-string args`);
     assert.match(body, /stable title\/topic-key upsert semantics/i, `${promptFile} must teach save/upsert persistence`);
     assert.match(body, /`lore_lore_memory_update` is not part of the observed current MCP surface/i, `${promptFile} must not require prefixed memory update`);
+    assert.match(body, /save a new artifact or use backend-supported upsert semantics/i, `${promptFile} must explain update-free persistence`);
     assert.match(body, /`lore-memory\.ts`;? it was removed and is not available/i, `${promptFile} must explicitly mark lore-memory.ts as removed`);
     assert.doesNotMatch(body, /MUST use `lore-memory\.ts`|use `lore-memory\.ts` for|load `lore-memory\.ts`/i, `${promptFile} must not advertise lore-memory.ts as active`);
     assert.doesNotMatch(body, /`delegate`|`delegation_read`|`delegation_list`/, `${promptFile} must not expose parent-only delegation tools in child guidance`);
@@ -878,6 +882,7 @@ test("delegate grants lore memory tools to every child before launching", async 
         "contact_supervisor",
       ]);
       assert.equal(tools.includes("lore_lore_memory_update"), false);
+      assert.equal(tools.includes("mcp"), false);
       assert.equal(tools.includes("lore:*"), false);
       assert.equal(tools.includes("delegate"), false);
       assert.equal(tools.includes("delegation_read"), false);
@@ -897,6 +902,76 @@ test("delegate grants lore memory tools to every child before launching", async 
       ]) {
         assert.equal(tools.includes(deprecated), false, `child tool surface must not include deprecated ${deprecated}`);
       }
+    },
+  );
+});
+
+test("delegate explicitly loads approved MCP adapter and gates mcp tool when installed", async () => {
+  const homeDir = makeTempDir();
+  const projectDir = makeTempDir();
+  const runRoot = path.join(homeDir, "runs");
+  const adapterDir = path.join(homeDir, ".pi", "agent", "git", "github.com", "nicobailon", "pi-mcp-adapter");
+  fs.mkdirSync(adapterDir, { recursive: true });
+  const adapterPath = path.join(adapterDir, "index.ts");
+  fs.writeFileSync(adapterPath, "// adapter\n", "utf8");
+  fs.writeFileSync(path.join(adapterDir, "package.json"), JSON.stringify({
+    name: "pi-mcp-adapter",
+    pi: { extensions: ["./index.ts"] },
+  }), "utf8");
+
+  const childArgsPath = path.join(homeDir, "child-args.json");
+  const fakePi = writeInspectableFakePi(homeDir, childArgsPath, {
+    status: "completed",
+    summary: "Child finished.",
+    artifacts: [],
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
+    question: null,
+    options: [],
+    risks: [],
+    skill_resolution: "none",
+  });
+
+  await withEnv(
+    {
+      HOME: homeDir,
+      LORE_PI_RUNTIME_RUN_ROOT: runRoot,
+      LORE_PI_RUNTIME_MODELS_PATH: path.join(homeDir, "models.json"),
+      LORE_PI_RUNTIME_PI_COMMAND: fakePi,
+      LORE_PI_CHILD: undefined,
+      LORE_PI_RUN_DIR: undefined,
+      LORE_PI_DELEGATION_DEPTH: undefined,
+    },
+    async () => {
+      const fake = makeFakePi();
+      runtimeExtension(fake.api as never);
+      const delegate = fake.tools.get(DELEGATE_TOOL_NAME);
+      assert.ok(delegate);
+
+      await delegate.execute("tool-mcp-adapter", {
+        agent: "lore-worker",
+        task: "Use MCP.",
+        cwd: projectDir,
+      });
+
+      const recorded = JSON.parse(fs.readFileSync(childArgsPath, "utf8")) as { args: string[] };
+      assert.ok(recorded.args.includes("--no-extensions"));
+      const extensionIndexes = recorded.args.flatMap((arg, index) => arg === "--extension" ? [index] : []);
+      const extensions = extensionIndexes.map((index) => recorded.args[index + 1]);
+      assert.ok(extensions.some((extensionPath) => extensionPath.endsWith(path.join("src", "extension", "index.ts"))));
+      assert.ok(extensions.includes(adapterPath));
+
+      const toolsFlagIndex = recorded.args.indexOf("--tools");
+      assert.notEqual(toolsFlagIndex, -1);
+      const tools = recorded.args[toolsFlagIndex + 1].split(",");
+      assert.equal(tools.includes("mcp"), true);
+      assert.equal(tools.includes("lore_lore_memory_save"), true);
+      assert.equal(tools.includes("lore_memory_save"), true);
+      assert.equal(tools.includes("delegate"), false);
+      assert.equal(tools.includes("delegation_read"), false);
+      assert.equal(tools.includes("delegation_list"), false);
     },
   );
 });
