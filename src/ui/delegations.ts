@@ -2,6 +2,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { readDelegation, type ListedDelegation } from "../runtime/delegations.ts";
 import type { RecoveredRun } from "../runtime/result-store.ts";
+import type { DelegationEnvelope } from "../runtime/envelopes.ts";
 
 export const DELEGATION_TRACE_FILE = "trace.jsonl";
 
@@ -55,7 +56,7 @@ interface DelegationListItem {
   modelRef: string;
 }
 
-interface DelegationSnapshot {
+export interface DelegationSnapshot {
   id: string;
   agent: string;
   status: string;
@@ -64,10 +65,13 @@ interface DelegationSnapshot {
   rawOutputPath: string;
   stderrPath: string | null;
   summary: string | null;
+  envelope: DelegationEnvelope | null;
+  parseError: string | null;
+  parseSource: string | null;
   trace: string;
   rawOutput: string;
   stderr: string;
-  usage: { input: number; output: number; totalTokens: number; model: string };
+  usage: { input: number; output: number; totalTokens: number; providerTotalTokens: number; model: string };
 }
 
 export async function openDelegationViewer(
@@ -213,12 +217,15 @@ async function showDelegationDetails(
         lines.push(borderLine(theme, innerWidth, `${snapshot.agent} · ${snapshot.status}`));
         lines.push(borderLine(theme, innerWidth, `model: ${snapshot.usage.model || snapshot.modelRef || "default"}`));
         if (snapshot.usage.input > 0 || snapshot.usage.output > 0) {
-          lines.push(borderLine(theme, innerWidth, `tokens: input=${snapshot.usage.input} output=${snapshot.usage.output} total=${snapshot.usage.totalTokens}`));
+          const providerTotal = snapshot.usage.providerTotalTokens > 0 && snapshot.usage.providerTotalTokens !== snapshot.usage.totalTokens
+            ? ` provider_total=${snapshot.usage.providerTotalTokens}`
+            : "";
+          lines.push(borderLine(theme, innerWidth, `tokens: input=${snapshot.usage.input} output=${snapshot.usage.output} total=${snapshot.usage.totalTokens}${providerTotal}`));
         }
         lines.push(borderLine(theme, innerWidth, color(theme, "dim", snapshot.runDir)));
 
         const body = formatSnapshotBody(snapshot).map((line) => {
-          if (line === "Live trace" || line === "stderr" || line === "result") return color(theme, "muted", line);
+          if (isSnapshotSectionHeading(line)) return color(theme, "muted", line);
           return line;
         });
         lastBodySize = body.length;
@@ -288,6 +295,9 @@ async function readSnapshot(id: string, recover: typeof readDelegation): Promise
     rawOutputPath: run.result?.rawOutputPath ?? run.record.files.rawOutput,
     stderrPath: run.result?.stderrPath ?? (run.stderr ? run.record.files.stderr : null),
     summary: run.status?.summary ?? null,
+    envelope: run.result?.envelope ?? null,
+    parseError: run.result?.parseError ?? null,
+    parseSource: run.result?.parseSource ?? run.status?.parseSource ?? null,
     trace,
     rawOutput: run.rawOutput ?? "",
     stderr: run.stderr ?? "",
@@ -295,21 +305,43 @@ async function readSnapshot(id: string, recover: typeof readDelegation): Promise
   };
 }
 
-function formatSnapshotBody(snapshot: DelegationSnapshot): string[] {
+export function formatSnapshotBody(snapshot: DelegationSnapshot): string[] {
   const body: string[] = [];
-  if (snapshot.summary) {
-    body.push("Summary");
-    body.push(snapshot.summary);
-    body.push("");
+
+  if (snapshot.envelope) {
+    body.push("Result");
+    body.push(...formatEnvelopeSnapshot(snapshot.envelope));
+  } else {
+    if (snapshot.summary) {
+      body.push("Summary");
+      body.push(snapshot.summary);
+      body.push("");
+    }
+    body.push("Result");
+    body.push(`status: ${snapshot.status}`);
+    if (snapshot.status === "running") {
+      body.push("Final envelope has not been persisted yet.");
+    }
+    if (snapshot.parseError) {
+      body.push(`parseError: ${snapshot.parseError}`);
+    }
+    const finalOutput = formatFinalOutputPreview(snapshot.rawOutput);
+    if (finalOutput.length > 0) {
+      body.push("", "Final output", ...finalOutput);
+    }
   }
-  body.push("Live trace");
-  body.push(...(snapshot.trace.trim() ? snapshot.trace.split(/\r?\n/) : ["(no trace events yet; waiting for child agent)"]));
+
+  const recentActivity = snapshot.trace.trim() ? snapshot.trace.split(/\r?\n/).slice(-12) : [];
+  if (!snapshot.envelope && recentActivity.length > 0) {
+    body.push("", "Recent activity", ...recentActivity);
+  } else if (!snapshot.envelope && snapshot.status === "running") {
+    body.push("", "Recent activity", "(no trace events yet; waiting for child agent)");
+  }
+
   if (snapshot.stderr.trim()) {
-    body.push("", "stderr", ...snapshot.stderr.split(/\r?\n/).filter(Boolean));
+    body.push("", "stderr", ...snapshot.stderr.split(/\r?\n/).filter(Boolean).slice(-40));
   }
-  if (snapshot.rawOutput.trim()) {
-    body.push("", "result", ...snapshot.rawOutput.split(/\r?\n/).filter(Boolean));
-  }
+
   return body;
 }
 
@@ -321,6 +353,73 @@ function safeRecover(recover: typeof readDelegation, id: string): RecoveredRun |
   }
 }
 
+function formatEnvelopeSnapshot(envelope: DelegationEnvelope): string[] {
+  const lines = [
+    `status: ${envelope.status}`,
+    ...("phase" in envelope ? [`phase: ${envelope.phase}`] : []),
+    `summary: ${envelope.summary}`,
+    `artifacts: ${formatList(envelope.artifacts)}`,
+    `files: ${formatList(envelope.files)}`,
+    `validations: ${formatList(envelope.validations)}`,
+    `risks: ${formatList(envelope.risks)}`,
+    `next_step: ${envelope.next_step ?? "(none)"}`,
+    `continuation: ${envelope.continuation ?? "(none)"}`,
+    `skill_resolution: ${envelope.skill_resolution}`,
+  ];
+
+  if (envelope.status === "needs_user_input") {
+    lines.push(`question: ${envelope.question ?? "(none)"}`);
+    lines.push(`options: ${formatList(envelope.options)}`);
+  }
+
+  return lines;
+}
+
+function formatFinalOutputPreview(rawOutput: string): string[] {
+  const text = extractLastAssistantTextFromPiJson(rawOutput) ?? formatNonJsonlOutputPreview(rawOutput);
+  if (!text) return [];
+  return text
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(0, 24);
+}
+
+function formatNonJsonlOutputPreview(rawOutput: string): string | null {
+  const trimmed = rawOutput.trim();
+  if (!trimmed) return null;
+  if (isJsonlLike(trimmed)) {
+    return "Raw JSONL output omitted; inspect rawOutputPath for the trace if needed.";
+  }
+  if (looksJsonLike(trimmed)) {
+    return "Structured JSON output did not match the delegation envelope; inspect rawOutputPath for raw details.";
+  }
+  return compactMultiline(trimmed, 2400);
+}
+
+function extractLastAssistantTextFromPiJson(rawOutput: string): string | null {
+  let lastText: string | null = null;
+  for (const line of rawOutput.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const event = JSON.parse(trimmed) as Record<string, unknown>;
+      if (event.type !== "message_end") continue;
+      const message = event.message;
+      if (!isRecord(message) || message.role !== "assistant" || !Array.isArray(message.content)) continue;
+      const text = message.content
+        .filter((part): part is { type: string; text: string } => isRecord(part) && part.type === "text" && typeof part.text === "string")
+        .map((part) => part.text)
+        .join("\n")
+        .trim();
+      if (text) lastText = compactMultiline(text, 2400);
+    } catch {
+      // Non-JSON lines are ignored here; callers handle plain text fallback.
+    }
+  }
+  return lastText;
+}
+
 function formatTraceLine(raw: string): string | undefined {
   try {
     const record = JSON.parse(raw) as Record<string, unknown>;
@@ -329,17 +428,24 @@ function formatTraceLine(raw: string): string | undefined {
     const turn = typeof record.turnIndex === "number" ? ` turn=${record.turnIndex}` : "";
     const tool = typeof record.toolName === "string" ? ` ${record.toolName}` : "";
     const status = typeof record.status === "string" ? ` ${record.status}` : "";
-    const summary = typeof record.summary === "string" ? ` — ${record.summary}` : "";
-    return `${ts} ${type}${turn}${tool}${status}${summary}`;
+    if (type === "assistant_message") return `${ts} assistant_message — output updated`;
+    if (type === "token_usage") {
+      const input = typeof record.input === "number" ? record.input : 0;
+      const output = typeof record.output === "number" ? record.output : 0;
+      return `${ts} token_usage — ${input} in / ${output} out`;
+    }
+    if (type.startsWith("tool_")) return `${ts} ${type}${tool}${status}`;
+    const summary = typeof record.summary === "string" && !looksJsonLike(record.summary) ? ` — ${record.summary}` : "";
+    return `${ts} ${type}${turn}${status}${summary}`;
   } catch {
-    return raw.trim() || undefined;
+    return undefined;
   }
 }
 
-function extractUsageSummary(rawTrace: string, fallbackModel: string) {
+export function extractUsageSummary(rawTrace: string, fallbackModel: string) {
   let input = 0;
   let output = 0;
-  let total = 0;
+  let providerTotal = 0;
   let model = fallbackModel;
   for (const line of rawTrace.split(/\r?\n/)) {
     if (!line.trim()) continue;
@@ -348,11 +454,38 @@ function extractUsageSummary(rawTrace: string, fallbackModel: string) {
       if (record.type !== "token_usage") continue;
       input += typeof record.input === "number" ? record.input : 0;
       output += typeof record.output === "number" ? record.output : 0;
-      total += typeof record.totalTokens === "number" ? record.totalTokens : 0;
+      providerTotal += typeof record.totalTokens === "number" ? record.totalTokens : 0;
       if (typeof record.model === "string" && record.model) model = record.model;
     } catch {}
   }
-  return { input, output, totalTokens: total || input + output, model };
+  return { input, output, totalTokens: input + output, providerTotalTokens: providerTotal, model };
+}
+
+function formatList(values: string[]): string {
+  return values.length > 0 ? values.join("; ") : "(none)";
+}
+
+function compactMultiline(value: string, max: number): string {
+  const clean = value.trim();
+  return clean.length > max ? `${clean.slice(0, max)}…` : clean;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isJsonlLike(text: string): boolean {
+  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return lines.length > 1 && lines.every(looksJsonLike);
+}
+
+function looksJsonLike(text: string): boolean {
+  const trimmed = text.trim();
+  return trimmed.startsWith("{") || trimmed.startsWith("[");
+}
+
+function isSnapshotSectionHeading(line: string): boolean {
+  return line === "Summary" || line === "Result" || line === "Final output" || line === "Recent activity" || line === "stderr";
 }
 
 function tailLines(text: string, count: number): string[] {
