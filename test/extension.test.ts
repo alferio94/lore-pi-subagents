@@ -182,6 +182,77 @@ test("lore-models command lists available Pi models from the model registry", as
   );
 });
 
+test("lore-models command switches Orchestrator through Pi registry without writing worker routes", async () => {
+  const homeDir = makeTempDir();
+  const projectDir = makeTempDir();
+  const selectedModel = { provider: "openai", id: "gpt-5" };
+  const setModels: unknown[] = [];
+  let thinking = "medium";
+
+  await withEnv(
+    {
+      HOME: homeDir,
+      LORE_PI_RUNTIME_MODELS_PATH: path.join(homeDir, ".pi", "agent", "lore", "models.json"),
+      LORE_PI_CHILD: undefined,
+      LORE_PI_RUN_DIR: undefined,
+    },
+    async () => {
+      const fake = makeFakePi();
+      (fake.api as { setModel?: (model: unknown) => Promise<boolean> }).setModel = async (model) => {
+        setModels.push(model);
+        return true;
+      };
+      (fake.api as { getThinkingLevel?: () => string }).getThinkingLevel = () => thinking;
+      (fake.api as { setThinkingLevel?: (level: string) => void }).setThinkingLevel = (level) => {
+        thinking = level;
+      };
+      runtimeExtension(fake.api as never);
+      const command = fake.commands.find((candidate) => candidate.name === LORE_MODELS_COMMAND);
+      assert.ok(command?.definition.handler);
+
+      const selections = [
+        "Orchestrator/current session: model=anthropic/claude-sonnet-4-5, thinking=medium",
+        "Model: anthropic/claude-sonnet-4-5",
+        "openai/gpt-5",
+        "Thinking: medium",
+        "off",
+        "Back",
+        "Done",
+      ];
+      const ctx = {
+        cwd: projectDir,
+        model: { provider: "anthropic", id: "claude-sonnet-4-5" },
+        modelRegistry: {
+          getAvailable() {
+            return [selectedModel];
+          },
+          find(provider: string, modelId: string) {
+            return provider === "openai" && modelId === "gpt-5" ? selectedModel : undefined;
+          },
+        },
+        ui: {
+          async select(_title: string, items: string[]) {
+            const next = selections.shift();
+            assert.ok(next, `unexpected select call with items: ${items.join(", ")}`);
+            assert.ok(items.includes(next), `selection ${next} not found in ${items.join(", ")}`);
+            return next;
+          },
+          async input() {
+            throw new Error("manual model input should not be requested");
+          },
+          notify() {},
+        },
+      };
+
+      await command.definition.handler("", ctx);
+
+      assert.deepEqual(setModels, [selectedModel]);
+      assert.equal(thinking, "off");
+      assert.equal(fs.existsSync(path.join(homeDir, ".pi", "agent", "lore", "models.json")), false);
+    },
+  );
+});
+
 test("child runtime only registers contact_supervisor", async () => {
   await withEnv({ LORE_PI_CHILD: "1", LORE_PI_RUN_DIR: "/tmp/lore-run" }, async () => {
     const fake = makeFakePi();

@@ -40,14 +40,24 @@ export interface LoreModelsUIContext {
   };
 }
 
+export interface LoreModelsOrchestratorControls {
+  getCurrentModel?: () => string | undefined;
+  resolveModel?: (modelRef: string) => unknown | undefined | Promise<unknown | undefined>;
+  setModel?: (model: unknown) => Promise<boolean>;
+  getThinkingLevel?: () => string | undefined;
+  setThinkingLevel?: (level: string) => void;
+}
+
 export interface LoreModelsUIOptions {
   availableModels?: string[];
   agentNames?: string[];
+  orchestrator?: LoreModelsOrchestratorControls;
   readConfig?: () => Promise<LoreModelRoutingConfig>;
   writeConfig: (config: LoreModelRoutingConfig) => Promise<LoreModelRoutingConfig>;
 }
 
 const THINKING_LEVELS = ["inherit", "minimal", "low", "medium", "high", "xhigh"] as const;
+const ORCHESTRATOR_THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh"] as const;
 const BACK_LABEL = "Back";
 const DONE_LABEL = "Done";
 const AGENTS_LABEL = "Agent routes";
@@ -61,6 +71,7 @@ const OVERLAY_ROWS = 12;
 type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 type RouteTarget =
+  | { kind: "orchestrator"; label: string; description: string }
   | { kind: "default"; routeKind: "nonSdd" | "sdd"; label: string; description: string }
   | { kind: "agent"; agentName: string; label: string; description: string };
 
@@ -87,9 +98,14 @@ export async function openLoreModelsUI(
   let config = await readConfig();
 
   while (true) {
-    const selectedTarget = await chooseRouteTarget(ctx, config, agentNames);
+    const selectedTarget = await chooseRouteTarget(ctx, config, agentNames, options.orchestrator);
     if (!selectedTarget) {
       return config;
+    }
+
+    if (selectedTarget.kind === "orchestrator") {
+      await editOrchestratorWizard(ctx, options.orchestrator, availableModels);
+      continue;
     }
 
     const currentRoute = selectedTarget.kind === "default"
@@ -107,8 +123,19 @@ export async function openLoreModelsUI(
   }
 }
 
-export function buildLoreModelsMenu(config: LoreModelRoutingConfig, agentNames: string[]): Array<RouteTarget | { kind: "agents"; label: string; description: string } | { kind: "close"; label: string; description: string }> {
+export function buildLoreModelsMenu(
+  config: LoreModelRoutingConfig,
+  agentNames: string[],
+  orchestrator?: LoreModelsOrchestratorControls,
+): Array<RouteTarget | { kind: "agents"; label: string; description: string } | { kind: "close"; label: string; description: string }> {
   return [
+    ...(orchestrator
+      ? [{
+          kind: "orchestrator" as const,
+          label: `Orchestrator/current session: ${formatOrchestratorSummary(orchestrator)}`,
+          description: "Switch the active Pi session model/thinking; worker routes are unchanged",
+        }]
+      : []),
     {
       kind: "default",
       routeKind: "nonSdd",
@@ -132,9 +159,10 @@ async function chooseRouteTarget(
   ctx: LoreModelsUIContext,
   config: LoreModelRoutingConfig,
   agentNames: string[],
+  orchestrator?: LoreModelsOrchestratorControls,
 ): Promise<RouteTarget | null> {
   while (true) {
-    const menu = buildLoreModelsMenu(config, agentNames);
+    const menu = buildLoreModelsMenu(config, agentNames, orchestrator);
     const selectedValue = await chooseMenuItem(ctx, "/lore-models", menu.map((item) => ({
       value: item.label,
       label: item.label,
@@ -236,6 +264,144 @@ async function editRouteWizard(
     if (saveChoice === "cancel") {
       return undefined;
     }
+  }
+}
+
+async function editOrchestratorWizard(
+  ctx: LoreModelsUIContext,
+  orchestrator: LoreModelsOrchestratorControls | undefined,
+  availableModels: string[],
+): Promise<void> {
+  if (!orchestrator) {
+    ctx.ui.notify("Orchestrator model controls are unavailable in this Pi context.", "error");
+    return;
+  }
+
+  while (true) {
+    const model = orchestrator.getCurrentModel?.() ?? "unavailable";
+    const thinking = orchestrator.getThinkingLevel?.() ?? "unavailable";
+    const selectedValue = await chooseMenuItem(ctx, "Orchestrator/current session", [
+      { value: "model", label: `Model: ${model}`, description: "Switch the active Pi session model only" },
+      { value: "thinking", label: `Thinking: ${thinking}`, description: "Set the active Pi session thinking level" },
+      { value: BACK_LABEL, label: BACK_LABEL, description: "Return to worker routing targets" },
+    ], {
+      subtitle: "Session-only controls; worker model-routing config is not changed",
+      width: "72%",
+      minWidth: 66,
+      maxHeight: 18,
+    });
+
+    if (!selectedValue || selectedValue === BACK_LABEL) {
+      return;
+    }
+
+    if (selectedValue === "model") {
+      await chooseAndApplyOrchestratorModel(ctx, orchestrator, availableModels);
+    } else if (selectedValue === "thinking") {
+      applyOrchestratorThinking(ctx, orchestrator, await chooseOrchestratorThinking(ctx, orchestrator));
+    }
+  }
+}
+
+async function chooseAndApplyOrchestratorModel(
+  ctx: LoreModelsUIContext,
+  orchestrator: LoreModelsOrchestratorControls,
+  availableModels: string[],
+): Promise<void> {
+  if (!orchestrator.setModel || !orchestrator.resolveModel) {
+    ctx.ui.notify("Orchestrator model switching is unavailable in this Pi context.", "error");
+    return;
+  }
+
+  const currentModel = orchestrator.getCurrentModel?.();
+  const items = [
+    ...availableModels.map((model) => ({
+      value: model,
+      label: `${model}${currentModel === model ? " (current)" : ""}`,
+      description: currentModel === model ? "Current Orchestrator model" : "Available Pi model",
+    })),
+    { value: MANUAL_MODEL_LABEL, label: MANUAL_MODEL_LABEL, description: "Type a provider/model id and resolve it through the Pi registry" },
+    { value: BACK_LABEL, label: BACK_LABEL, description: "Return to Orchestrator settings" },
+  ];
+  const selectedValue = await chooseMenuItem(ctx, "Model for Orchestrator/current session", items, {
+    subtitle: currentModel ? `Current model: ${currentModel}` : "Current model: unavailable",
+    width: "78%",
+    minWidth: 72,
+    maxHeight: "80%",
+  });
+  if (!selectedValue || selectedValue === BACK_LABEL) {
+    return;
+  }
+
+  const modelRef = selectedValue === MANUAL_MODEL_LABEL
+    ? (await ctx.ui.input("Orchestrator model id", currentModel ?? ""))?.trim()
+    : selectedValue;
+  if (!modelRef) {
+    return;
+  }
+
+  let model: unknown;
+  try {
+    model = await orchestrator.resolveModel(modelRef);
+  } catch (error) {
+    ctx.ui.notify(`Failed to resolve Orchestrator model '${modelRef}': ${formatError(error)}`, "error");
+    return;
+  }
+  if (!model) {
+    ctx.ui.notify(`Orchestrator model not found in the Pi registry: ${modelRef}`, "error");
+    return;
+  }
+
+  try {
+    const ok = await orchestrator.setModel(model);
+    if (!ok) {
+      ctx.ui.notify(`Failed to switch Orchestrator to ${modelRef}: Pi reported unavailable auth (setModel returned false).`, "error");
+      return;
+    }
+    ctx.ui.notify(`Orchestrator model set to ${modelRef}.`, "info");
+  } catch (error) {
+    ctx.ui.notify(`Failed to switch Orchestrator to ${modelRef}: ${formatError(error)}`, "error");
+  }
+}
+
+async function chooseOrchestratorThinking(
+  ctx: LoreModelsUIContext,
+  orchestrator: LoreModelsOrchestratorControls,
+): Promise<string | undefined> {
+  const current = orchestrator.getThinkingLevel?.();
+  const selectedValue = await chooseMenuItem(ctx, "Thinking for Orchestrator/current session", [
+    ...ORCHESTRATOR_THINKING_LEVELS.map((thinking) => ({
+      value: thinking,
+      label: `${thinking}${current === thinking ? " (current)" : ""}`,
+      description: current === thinking ? "Current Orchestrator thinking level" : "Set session thinking level",
+    })),
+    { value: BACK_LABEL, label: BACK_LABEL, description: "Return to Orchestrator settings" },
+  ], {
+    subtitle: current ? `Current thinking: ${current}` : "Current thinking: unavailable",
+    width: 52,
+    minWidth: 52,
+    maxHeight: 18,
+  });
+
+  return !selectedValue || selectedValue === BACK_LABEL ? undefined : selectedValue;
+}
+
+function applyOrchestratorThinking(
+  ctx: LoreModelsUIContext,
+  orchestrator: LoreModelsOrchestratorControls,
+  level: string | undefined,
+): void {
+  if (!level) return;
+  if (!orchestrator.setThinkingLevel) {
+    ctx.ui.notify("Orchestrator thinking controls are unavailable in this Pi context.", "error");
+    return;
+  }
+
+  try {
+    orchestrator.setThinkingLevel(level);
+    ctx.ui.notify(`Orchestrator thinking set to ${level}.`, "info");
+  } catch (error) {
+    ctx.ui.notify(`Failed to set Orchestrator thinking to ${level}: ${formatError(error)}`, "error");
   }
 }
 
@@ -371,7 +537,7 @@ async function chooseMenuItem(
     return items.find((item) => item.label === selectedLabel)?.value ?? null;
   }
 
-  return ctx.ui.custom<string | null>((tui, theme, _keybindings, done) => {
+  return ctx.ui.custom<string | null>((tui, theme, keybindings, done) => {
     let selectedIndex = 0;
     let scrollOffset = 0;
     const rowCount = Math.min(Math.max(items.length, 6), OVERLAY_ROWS);
@@ -392,7 +558,7 @@ async function chooseMenuItem(
         const innerWidth = Math.max(24, width - 2);
         const lines: string[] = [];
         const visibleItems = items.slice(scrollOffset, scrollOffset + visibleRows);
-        const footer = `↑↓/jk navigate • Enter select • Esc close (${selectedIndex + 1}/${items.length})`;
+        const footer = `↑↓/jk navigate • Enter select • Esc/q close (${selectedIndex + 1}/${items.length})`;
 
         lines.push(color(theme, "accent", `╭${"─".repeat(innerWidth)}╮`));
         lines.push(borderLine(theme, innerWidth, color(theme, "accent", bold(theme, title))));
@@ -423,27 +589,27 @@ async function chooseMenuItem(
         return lines;
       },
       handleInput(data: string) {
-        if (isUpKey(data)) {
+        if (matchesKeybinding(keybindings, data, "tui.select.up") || isUpKey(data)) {
           moveSelection(-1);
           return;
         }
-        if (isDownKey(data)) {
+        if (matchesKeybinding(keybindings, data, "tui.select.down") || isDownKey(data)) {
           moveSelection(1);
           return;
         }
-        if (isPageUpKey(data)) {
+        if (matchesKeybinding(keybindings, data, "tui.select.pageUp") || isPageUpKey(data)) {
           moveSelection(-visibleRows);
           return;
         }
-        if (isPageDownKey(data)) {
+        if (matchesKeybinding(keybindings, data, "tui.select.pageDown") || isPageDownKey(data)) {
           moveSelection(visibleRows);
           return;
         }
-        if (isEnterKey(data)) {
+        if (matchesKeybinding(keybindings, data, "tui.select.confirm") || isEnterKey(data)) {
           done(items[selectedIndex]?.value ?? null);
           return;
         }
-        if (isCancelKey(data)) {
+        if (matchesKeybinding(keybindings, data, "tui.select.cancel") || isCancelKey(data)) {
           done(null);
         }
       },
@@ -579,5 +745,33 @@ function isEnterKey(data: string): boolean {
 }
 
 function isCancelKey(data: string): boolean {
-  return data === "\u001b" || data === "q";
+  const normalized = data.trim().toLowerCase();
+  return data === "q"
+    || data === "\u001b"
+    || data === "\u001b\u001b"
+    || data === "\u001b[27~"
+    || data === "\u001b[27;0~"
+    || normalized === "escape"
+    || normalized === "esc"
+    || normalized === "\\u001b"
+    || normalized === "\\x1b";
+}
+
+function matchesKeybinding(keybindings: unknown, data: string, binding: string): boolean {
+  const matcher = keybindings as { matches?: (keyData: string, keybinding: string) => boolean } | null | undefined;
+  try {
+    return matcher?.matches?.(data, binding) === true;
+  } catch {
+    return false;
+  }
+}
+
+function formatOrchestratorSummary(orchestrator: LoreModelsOrchestratorControls): string {
+  const model = orchestrator.getCurrentModel?.() ?? "unavailable";
+  const thinking = orchestrator.getThinkingLevel?.() ?? "unavailable";
+  return `model=${model}, thinking=${thinking}`;
+}
+
+function formatError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

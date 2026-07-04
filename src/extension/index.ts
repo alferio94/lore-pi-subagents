@@ -33,6 +33,12 @@ interface AvailableModelDescriptor {
   name?: string;
 }
 
+interface ModelRegistryLike {
+  getAvailable?: (() => unknown) | undefined;
+  getAll?: (() => unknown) | undefined;
+  find?: ((provider: string, modelId: string) => unknown) | undefined;
+}
+
 interface ToolExecuteContext {
   sessionManager?: {
     getSessionId(): string;
@@ -266,6 +272,7 @@ export default function lorePiRuntime(pi: ExtensionAPI): void {
         await openLoreModelsUI(ctx as never, {
           availableModels,
           agentNames: registry.agents.map((agent) => agent.name),
+          orchestrator: createOrchestratorControls(pi, ctx as { model?: AvailableModelDescriptor; modelRegistry?: ModelRegistryLike }),
           readConfig: readModelRoutingConfig,
           writeConfig: writeModelRoutingConfig,
         });
@@ -325,23 +332,93 @@ export default function lorePiRuntime(pi: ExtensionAPI): void {
   });
 }
 
-async function getAvailableModelRefs(ctx: { modelRegistry?: { getAvailable?: (() => unknown) | undefined } | undefined }): Promise<string[]> {
+function createOrchestratorControls(pi: ExtensionAPI, ctx: { model?: AvailableModelDescriptor; modelRegistry?: ModelRegistryLike }) {
+  const modelApi = pi as unknown as {
+    setModel?: (model: unknown) => Promise<boolean>;
+    getThinkingLevel?: () => string;
+    setThinkingLevel?: (level: string) => void;
+  };
+  let currentModelRef = ctx.model ? formatModelRef(ctx.model) : undefined;
+  return {
+    getCurrentModel: () => currentModelRef,
+    resolveModel: (modelRef: string) => resolvePiModel(ctx.modelRegistry, modelRef),
+    setModel: modelApi.setModel
+      ? async (model: unknown) => {
+          const ok = await modelApi.setModel!(model);
+          if (ok && isModelDescriptor(model)) {
+            currentModelRef = formatModelRef(model);
+          }
+          return ok;
+        }
+      : undefined,
+    getThinkingLevel: () => modelApi.getThinkingLevel?.(),
+    setThinkingLevel: modelApi.setThinkingLevel ? (level: string) => modelApi.setThinkingLevel!(level) : undefined,
+  };
+}
+
+async function getAvailableModelRefs(ctx: { modelRegistry?: ModelRegistryLike | undefined }): Promise<string[]> {
   const registry = ctx.modelRegistry;
   if (!registry?.getAvailable) return [];
   try {
     const available = await Promise.resolve(registry.getAvailable.call(registry));
     if (!Array.isArray(available)) return [];
     return available
-      .map((model: AvailableModelDescriptor) => formatModelRef(model))
+      .filter(isModelDescriptor)
+      .map((model) => formatModelRef(model))
       .filter((model): model is string => Boolean(model));
   } catch {
     return [];
   }
 }
 
+async function resolvePiModel(registry: ModelRegistryLike | undefined, modelRef: string): Promise<unknown | undefined> {
+  const parsed = parseModelRef(modelRef);
+  if (!parsed || !registry) return undefined;
+
+  try {
+    const found = registry.find?.(parsed.provider, parsed.id);
+    if (found) return found;
+  } catch {
+    // Fall through to list-based resolution so a registry find failure still surfaces as not found.
+  }
+
+  for (const getter of [registry.getAvailable, registry.getAll]) {
+    if (!getter) continue;
+    try {
+      const models = await Promise.resolve(getter.call(registry));
+      if (!Array.isArray(models)) continue;
+      const found = models.find((model) => isModelDescriptor(model)
+        && model.provider === parsed.provider
+        && model.id === parsed.id);
+      if (found) return found;
+    } catch {
+      // Keep trying other registry surfaces.
+    }
+  }
+
+  return undefined;
+}
+
+function parseModelRef(modelRef: string): { provider: string; id: string } | undefined {
+  const trimmed = modelRef.trim();
+  const separator = trimmed.indexOf("/");
+  if (separator <= 0 || separator === trimmed.length - 1) return undefined;
+  return {
+    provider: trimmed.slice(0, separator),
+    id: trimmed.slice(separator + 1),
+  };
+}
+
 function formatModelRef(model: AvailableModelDescriptor): string | undefined {
   if (!model?.provider || !model?.id) return undefined;
   return `${model.provider}/${model.id}`;
+}
+
+function isModelDescriptor(model: unknown): model is AvailableModelDescriptor {
+  return typeof model === "object"
+    && model !== null
+    && typeof (model as AvailableModelDescriptor).provider === "string"
+    && typeof (model as AvailableModelDescriptor).id === "string";
 }
 
 function registerChildTraceHooks(pi: ExtensionAPI): void {

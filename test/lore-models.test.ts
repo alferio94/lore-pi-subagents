@@ -52,6 +52,114 @@ test("openLoreModelsUI uses route -> model -> thinking -> save flow for agent ro
   assert.deepEqual(result.agents["lore-worker"], { model: "openai/gpt-5", thinking: "medium" });
 });
 
+test("openLoreModelsUI switches Orchestrator model and thinking without writing worker routing config", async () => {
+  const selectedModel = { provider: "openai", id: "gpt-5" };
+  let currentModel = "anthropic/old";
+  let currentThinking = "medium";
+  let writeCount = 0;
+  const setModels: unknown[] = [];
+  const notifications: Array<{ message: string; level: string }> = [];
+  const selections = [
+    "Orchestrator/current session: model=anthropic/old, thinking=medium",
+    "Model: anthropic/old",
+    "openai/gpt-5",
+    "Thinking: medium",
+    "off",
+    "Back",
+    "Done",
+  ];
+
+  const result = await openLoreModelsUI({
+    ui: {
+      async select(_title, items) {
+        const next = selections.shift();
+        assert.ok(next, `unexpected select items: ${items.join(", ")}`);
+        assert.ok(items.includes(next), `selection ${next} missing from ${items.join(", ")}`);
+        return next;
+      },
+      async input() {
+        throw new Error("manual input not expected");
+      },
+      notify(message, level) {
+        notifications.push({ message, level });
+      },
+    },
+  }, {
+    availableModels: ["openai/gpt-5"],
+    agentNames: [],
+    orchestrator: {
+      getCurrentModel: () => currentModel,
+      resolveModel: (modelRef) => modelRef === "openai/gpt-5" ? selectedModel : undefined,
+      async setModel(model) {
+        setModels.push(model);
+        currentModel = "openai/gpt-5";
+        return true;
+      },
+      getThinkingLevel: () => currentThinking,
+      setThinkingLevel(level) {
+        currentThinking = level;
+      },
+    },
+    readConfig: async () => makeConfig(),
+    writeConfig: async (config) => {
+      writeCount += 1;
+      return config;
+    },
+  });
+
+  assert.equal(writeCount, 0);
+  assert.deepEqual(result, makeConfig());
+  assert.deepEqual(setModels, [selectedModel]);
+  assert.equal(currentThinking, "off");
+  assert.deepEqual(notifications.map((entry) => entry.level), ["info", "info"]);
+});
+
+test("openLoreModelsUI surfaces Orchestrator setModel false as an auth failure", async () => {
+  const notifications: Array<{ message: string; level: string }> = [];
+  const selections = [
+    "Orchestrator/current session: model=anthropic/old, thinking=medium",
+    "Model: anthropic/old",
+    "openai/gpt-5",
+    "Back",
+    "Done",
+  ];
+
+  await openLoreModelsUI({
+    ui: {
+      async select(_title, items) {
+        const next = selections.shift();
+        assert.ok(next, `unexpected select items: ${items.join(", ")}`);
+        assert.ok(items.includes(next), `selection ${next} missing from ${items.join(", ")}`);
+        return next;
+      },
+      async input() {
+        throw new Error("manual input not expected");
+      },
+      notify(message, level) {
+        notifications.push({ message, level });
+      },
+    },
+  }, {
+    availableModels: ["openai/gpt-5"],
+    agentNames: [],
+    orchestrator: {
+      getCurrentModel: () => "anthropic/old",
+      resolveModel: () => ({ provider: "openai", id: "gpt-5" }),
+      async setModel() {
+        return false;
+      },
+      getThinkingLevel: () => "medium",
+      setThinkingLevel() {},
+    },
+    readConfig: async () => makeConfig(),
+    writeConfig: async (config) => config,
+  });
+
+  assert.equal(notifications.length, 1);
+  assert.equal(notifications[0].level, "error");
+  assert.match(notifications[0].message, /unavailable auth|setModel returned false/);
+});
+
 test("openLoreModelsUI allows backing out without saving", async () => {
   const selections = ["Default non-SDD: inherit", "Back", "Done"];
   let writeCount = 0;
@@ -180,6 +288,56 @@ test("openLoreModelsUI prefers the centered custom overlay when available", asyn
       margin: 1,
     },
   });
+});
+
+test("openLoreModelsUI custom overlay closes on Pi cancel binding, Esc variants, and q", async () => {
+  const inputs = ["pi-cancel", "\u001b[27~", "q"];
+
+  for (const input of inputs) {
+    const result = await openLoreModelsUI({
+      ui: {
+        async select() {
+          throw new Error("select fallback not expected");
+        },
+        async input() {
+          throw new Error("manual input not expected");
+        },
+        notify() {},
+        async custom<T>(
+          factory: (
+            tui: { requestRender(): void },
+            theme: { fg(color: string, text: string): string; bold(text: string): string },
+            keybindings: unknown,
+            done: (value: T) => void,
+          ) => { render(width: number): string[]; handleInput(data: string): void; invalidate?(): void },
+        ) {
+          return await new Promise<T>((resolve) => {
+            const renderer = factory(
+              { requestRender() {} },
+              {
+                fg(_color: string, text: string) { return text; },
+                bold(text: string) { return text; },
+              },
+              {
+                matches(data: string, binding: string) {
+                  return data === "pi-cancel" && binding === "tui.select.cancel";
+                },
+              },
+              resolve,
+            );
+            renderer.handleInput(input);
+          });
+        },
+      },
+    }, {
+      availableModels: [],
+      agentNames: [],
+      readConfig: async () => makeConfig(),
+      writeConfig: async (config) => config,
+    });
+
+    assert.deepEqual(result, makeConfig());
+  }
 });
 
 test("openLoreModelsUI keeps colored custom overlay borders aligned", async () => {
