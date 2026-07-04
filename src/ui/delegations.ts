@@ -71,6 +71,9 @@ export interface DelegationSnapshot {
   trace: string;
   rawOutput: string;
   stderr: string;
+  traceMissing: boolean;
+  rawOutputMissing: boolean;
+  stderrMissing: boolean;
   usage: { input: number; output: number; totalTokens: number; providerTotalTokens: number; model: string };
 }
 
@@ -190,12 +193,12 @@ async function showDelegationDetails(
   recover: typeof readDelegation,
 ): Promise<void> {
   if (!ctx.ui.custom) {
-    const snapshot = await readSnapshot(id, recover);
+    const snapshot = await readDelegationSnapshot(id, recover);
     await ctx.ui.select(`Delegation ${id}`, formatSnapshotBody(snapshot).slice(0, 20));
     return;
   }
 
-  let snapshot = await readSnapshot(id, recover);
+  let snapshot = await readDelegationSnapshot(id, recover);
   let timer: NodeJS.Timeout | undefined;
 
   await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
@@ -204,7 +207,7 @@ async function showDelegationDetails(
     let lastBodySize = 0;
     const refresh = async () => {
       if (closed) return;
-      snapshot = await readSnapshot(id, recover).catch(() => snapshot);
+      snapshot = await readDelegationSnapshot(id, recover).catch(() => snapshot);
       tui.requestRender();
     };
     timer = setInterval(refresh, 900);
@@ -279,12 +282,19 @@ async function showDelegationDetails(
   if (timer) clearInterval(timer);
 }
 
-async function readSnapshot(id: string, recover: typeof readDelegation): Promise<DelegationSnapshot> {
+export async function readDelegationSnapshot(id: string, recover: typeof readDelegation): Promise<DelegationSnapshot> {
   const run = recover(id);
   const tracePath = path.join(run.record.runDir, DELEGATION_TRACE_FILE);
-  const traceRaw = await fs.readFile(tracePath, "utf8").catch(() => "");
-  const trace = tailLines(traceRaw, 120).map(formatTraceLine).filter((line): line is string => Boolean(line)).join("\n");
-  const usage = extractUsageSummary(traceRaw, run.record.modelRef ?? "");
+  const traceRaw = await fs.readFile(tracePath, "utf8").catch((error: unknown) => {
+    if (isMissingFileError(error)) return null;
+    return "";
+  });
+  const trace = traceRaw
+    ? tailLines(traceRaw, 120).map(formatTraceLine).filter((line): line is string => Boolean(line)).join("\n")
+    : "";
+  const usage = extractUsageSummary(traceRaw ?? "", run.record.modelRef ?? "");
+  const rawOutputPath = run.result?.rawOutputPath ?? run.record.files.rawOutput;
+  const stderrPath = run.result?.stderrPath ?? (run.stderr ? run.record.files.stderr : null);
 
   return {
     id,
@@ -292,8 +302,8 @@ async function readSnapshot(id: string, recover: typeof readDelegation): Promise
     status: run.status?.status ?? run.record.status,
     modelRef: run.record.modelRef ?? "default",
     runDir: run.record.runDir,
-    rawOutputPath: run.result?.rawOutputPath ?? run.record.files.rawOutput,
-    stderrPath: run.result?.stderrPath ?? (run.stderr ? run.record.files.stderr : null),
+    rawOutputPath,
+    stderrPath,
     summary: run.status?.summary ?? null,
     envelope: run.result?.envelope ?? null,
     parseError: run.result?.parseError ?? null,
@@ -301,6 +311,9 @@ async function readSnapshot(id: string, recover: typeof readDelegation): Promise
     trace,
     rawOutput: run.rawOutput ?? "",
     stderr: run.stderr ?? "",
+    traceMissing: traceRaw === null,
+    rawOutputMissing: run.rawOutput === null && Boolean(rawOutputPath),
+    stderrMissing: run.stderr === null && Boolean(stderrPath),
     usage,
   };
 }
@@ -328,18 +341,24 @@ export function formatSnapshotBody(snapshot: DelegationSnapshot): string[] {
     const finalOutput = formatFinalOutputPreview(snapshot.rawOutput);
     if (finalOutput.length > 0) {
       body.push("", "Final output", ...finalOutput);
+    } else if (snapshot.rawOutputMissing) {
+      body.push("", "Final output", formatMissingArtifactMessage("raw output", snapshot.rawOutputPath));
     }
   }
 
   const recentActivity = snapshot.trace.trim() ? snapshot.trace.split(/\r?\n/).slice(-12) : [];
   if (!snapshot.envelope && recentActivity.length > 0) {
     body.push("", "Recent activity", ...recentActivity);
+  } else if (!snapshot.envelope && snapshot.traceMissing) {
+    body.push("", "Recent activity", formatMissingArtifactMessage("trace log", path.join(snapshot.runDir, DELEGATION_TRACE_FILE)));
   } else if (!snapshot.envelope && snapshot.status === "running") {
     body.push("", "Recent activity", "(no trace events yet; waiting for child agent)");
   }
 
   if (snapshot.stderr.trim()) {
     body.push("", "stderr", ...snapshot.stderr.split(/\r?\n/).filter(Boolean).slice(-40));
+  } else if (snapshot.stderrMissing && snapshot.stderrPath) {
+    body.push("", "stderr", formatMissingArtifactMessage("stderr log", snapshot.stderrPath));
   }
 
   return body;
@@ -351,6 +370,14 @@ function safeRecover(recover: typeof readDelegation, id: string): RecoveredRun |
   } catch {
     return null;
   }
+}
+
+function formatMissingArtifactMessage(label: string, filePath: string): string {
+  return `(${label} was pruned or is missing: ${filePath})`;
+}
+
+function isMissingFileError(error: unknown): boolean {
+  return isRecord(error) && (error.code === "ENOENT" || error.code === "ENOTDIR");
 }
 
 function formatEnvelopeSnapshot(envelope: DelegationEnvelope): string[] {

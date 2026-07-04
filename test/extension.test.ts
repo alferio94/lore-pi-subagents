@@ -7,6 +7,8 @@ import runtimeExtension, {
   CONTACT_SUPERVISOR_TOOL_NAME,
   DELEGATE_TOOL_NAME,
   DELEGATION_LIST_TOOL_NAME,
+  DELEGATION_PRUNE_COMMAND,
+  DELEGATION_PRUNE_TOOL_NAME,
   DELEGATION_READ_TOOL_NAME,
   EXTENSION_NAME,
   LORE_MODELS_COMMAND,
@@ -117,9 +119,98 @@ test("parent runtime registers delegate tools and the lore-models command", asyn
     const fake = makeFakePi();
     runtimeExtension(fake.api as never);
 
-    assert.deepEqual([...fake.tools.keys()], [DELEGATE_TOOL_NAME, DELEGATION_READ_TOOL_NAME, DELEGATION_LIST_TOOL_NAME]);
-    assert.deepEqual(fake.commands.map((command) => command.name), [LORE_MODELS_COMMAND]);
+    assert.deepEqual([...fake.tools.keys()], [DELEGATE_TOOL_NAME, DELEGATION_READ_TOOL_NAME, DELEGATION_LIST_TOOL_NAME, DELEGATION_PRUNE_TOOL_NAME]);
+    assert.deepEqual(fake.commands.map((command) => command.name), [DELEGATION_PRUNE_COMMAND, LORE_MODELS_COMMAND]);
     assert.deepEqual(fake.shortcuts.map((shortcut) => shortcut.shortcut), ["ctrl+space"]);
+  });
+});
+
+test("manual delegation prune tool defaults to dry-run and reports would-delete artifacts", async () => {
+  const rootDir = makeTempDir();
+  const runDir = path.join(rootDir, "dg-00000001");
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({ status: "failed", updatedAt: "2020-01-01T00:00:00.000Z" }));
+  fs.writeFileSync(path.join(runDir, "raw-output.txt"), "heavy");
+  fs.utimesSync(path.join(runDir, "raw-output.txt"), new Date("2020-01-01T00:00:00.000Z"), new Date("2020-01-01T00:00:00.000Z"));
+
+  await withEnv({ LORE_PI_CHILD: undefined, LORE_PI_RUNTIME_RETENTION_DRY_RUN: "false" }, async () => {
+    const fake = makeFakePi();
+    runtimeExtension(fake.api as never);
+    const tool = fake.tools.get(DELEGATION_PRUNE_TOOL_NAME);
+    assert.ok(tool);
+
+    const result = await tool.execute("call-1", {
+      rootDir,
+      heavyLogAgeDays: 0,
+      maxAgeDays: 99999,
+      keepLast: 999,
+      maxTotalSize: "999gb",
+    }) as { content: Array<{ text: string }>; details: { report: { dryRun: boolean; planned: { files: number; bytes: number } } } };
+
+    assert.equal(result.details.report.dryRun, true);
+    assert.equal(result.details.report.planned.files, 1);
+    assert.match(result.content[0].text, /wouldReclaimBytes: 5/);
+    assert.match(result.content[0].text, /would-delete file/);
+    assert.equal(fs.existsSync(path.join(runDir, "raw-output.txt")), true);
+  });
+});
+
+test("manual delegation prune tool executes only with dryRun false and reports reclaimed bytes", async () => {
+  const rootDir = makeTempDir();
+  const runDir = path.join(rootDir, "dg-00000002");
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({ status: "completed", updatedAt: "2020-01-01T00:00:00.000Z" }));
+  fs.writeFileSync(path.join(runDir, "stderr.txt"), "heavy");
+  fs.utimesSync(path.join(runDir, "stderr.txt"), new Date("2020-01-01T00:00:00.000Z"), new Date("2020-01-01T00:00:00.000Z"));
+  fs.mkdirSync(path.join(rootDir, "notes"));
+
+  await withEnv({ LORE_PI_CHILD: undefined, LORE_PI_RUNTIME_RETENTION_DRY_RUN: "true" }, async () => {
+    const fake = makeFakePi();
+    runtimeExtension(fake.api as never);
+    const tool = fake.tools.get(DELEGATION_PRUNE_TOOL_NAME);
+    assert.ok(tool);
+
+    const result = await tool.execute("call-2", {
+      rootDir,
+      dryRun: false,
+      heavyLogAgeDays: 0,
+      maxAgeDays: 99999,
+      keepLast: 999,
+      maxTotalSize: "999gb",
+    }) as { content: Array<{ text: string }>; details: { report: { dryRun: boolean; planned: { files: number; bytes: number }; executed: { files: number; bytes: number }; skipped: Record<string, number> } } };
+
+    assert.equal(result.details.report.dryRun, false);
+    assert.equal(result.details.report.planned.files, 1);
+    assert.equal(result.details.report.executed.files, 1);
+    assert.equal(result.details.report.executed.bytes, 5);
+    assert.equal(result.details.report.skipped["non-dg"], 1);
+    assert.match(result.content[0].text, /reclaimedBytes: 5/);
+    assert.match(result.content[0].text, /deleted file/);
+    assert.equal(fs.existsSync(path.join(runDir, "stderr.txt")), false);
+  });
+});
+
+test("delegation-prune command requires --execute before deleting planned artifacts", async () => {
+  const rootDir = makeTempDir();
+  const runDir = path.join(rootDir, "dg-00000003");
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, "status.json"), JSON.stringify({ status: "completed", updatedAt: "2020-01-01T00:00:00.000Z" }));
+  fs.writeFileSync(path.join(runDir, "stderr.txt"), "heavy");
+  fs.utimesSync(path.join(runDir, "stderr.txt"), new Date("2020-01-01T00:00:00.000Z"), new Date("2020-01-01T00:00:00.000Z"));
+
+  await withEnv({ LORE_PI_CHILD: undefined, LORE_PI_RUNTIME_RETENTION_DRY_RUN: "true" }, async () => {
+    const fake = makeFakePi();
+    runtimeExtension(fake.api as never);
+    const command = fake.commands.find((candidate) => candidate.name === DELEGATION_PRUNE_COMMAND);
+    assert.ok(command?.definition.handler);
+
+    const ctx = { ui: { notify() {} } };
+    await command.definition.handler(`--root ${rootDir} --heavy-log-age-days=0 --max-age-days=99999 --keep-last=999 --max-total-size=999gb`, ctx);
+    assert.equal(fs.existsSync(path.join(runDir, "stderr.txt")), true);
+
+    await command.definition.handler(`--root ${rootDir} --execute --heavy-log-age-days=0 --max-age-days=99999 --keep-last=999 --max-total-size=999gb`, ctx);
+    assert.equal(fs.existsSync(path.join(runDir, "stderr.txt")), false);
+    assert.match(fake.sentMessages.at(-1)?.message.content ?? "", /deleted file/);
   });
 });
 

@@ -10,12 +10,20 @@ import {
 } from "../runtime/child-launch.ts";
 import { discoverAgentRegistry } from "../runtime/agent-registry.ts";
 import {
+  DEFAULT_DELEGATIONS_ROOT,
+  DELEGATIONS_ROOT_ENV,
   formatBackgroundNotification,
   startDelegation,
   listDelegations,
   readDelegation,
   type BackgroundDelegationEvent,
 } from "../runtime/delegations.ts";
+import {
+  loadDelegationRetentionPolicy,
+  pruneDelegationArtifacts,
+  type DelegationRetentionPolicyInput,
+  type RetentionReport,
+} from "../runtime/delegation-retention.ts";
 import { readModelRoutingConfig, writeModelRoutingConfig } from "../runtime/model-routing.ts";
 import { openLoreModelsUI } from "../ui/lore-models.ts";
 import { DELEGATION_TRACE_FILE, openDelegationViewer } from "../ui/delegations.ts";
@@ -24,8 +32,10 @@ export const EXTENSION_NAME = "lore-pi-runtime";
 export const DELEGATE_TOOL_NAME = "delegate";
 export const DELEGATION_READ_TOOL_NAME = "delegation_read";
 export const DELEGATION_LIST_TOOL_NAME = "delegation_list";
+export const DELEGATION_PRUNE_TOOL_NAME = "delegation_prune";
 export const CONTACT_SUPERVISOR_TOOL_NAME = "contact_supervisor";
 export const LORE_MODELS_COMMAND = "lore-models";
+export const DELEGATION_PRUNE_COMMAND = "delegation-prune";
 
 interface AvailableModelDescriptor {
   provider: string;
@@ -92,6 +102,21 @@ const DELEGATION_LIST_PARAMETERS = {
   properties: {
     status: { type: "string", description: "Optional status filter." },
     limit: { type: "number", description: "Optional max number of runs to return." },
+  },
+} as const;
+
+const DELEGATION_PRUNE_PARAMETERS = {
+  type: "object",
+  additionalProperties: false,
+  properties: {
+    dryRun: { type: "boolean", description: "When false, delete planned artifacts. Defaults to true." },
+    rootDir: { type: "string", description: "Delegation artifact root. Defaults to configured/root env or the runtime delegation root." },
+    heavyLogAgeDays: { type: "number", description: "Age threshold for heavy files such as raw-output.txt, stderr.txt, and trace.jsonl." },
+    maxAgeDays: { type: "number", description: "Age threshold for whole run directory deletion." },
+    keepLast: { type: "number", description: "Number of most recent eligible runs to keep from count-based deletion." },
+    maxTotalSize: { type: "string", description: "Maximum retained size, e.g. 5gb, 500mb." },
+    maxTotalSizeBytes: { type: "number", description: "Maximum retained size in bytes." },
+    maxScanEntries: { type: "number", description: "Maximum direct root entries to scan." },
   },
 } as const;
 
@@ -261,6 +286,41 @@ export default function lorePiRuntime(pi: ExtensionAPI): void {
       },
     });
 
+    pi.registerTool({
+      name: DELEGATION_PRUNE_TOOL_NAME,
+      label: "Delegation Prune",
+      description: "Dry-run or execute safe pruning of persisted Lore delegation artifacts. Dry-run defaults to true.",
+      parameters: DELEGATION_PRUNE_PARAMETERS,
+      async execute(_toolCallId, params) {
+        try {
+          const { rootDir, policy } = resolveManualRetentionInput(params);
+          const report = pruneDelegationArtifacts({ rootDir, policy, reason: "manual" });
+          return {
+            content: [{ type: "text", text: formatRetentionReport(report) }],
+            details: { report },
+          };
+        } catch (error) {
+          return {
+            content: [{ type: "text", text: formatError(error) }],
+            details: { report: failedRetentionReport(error) },
+            isError: true,
+          };
+        }
+      },
+    });
+
+    pi.registerCommand(DELEGATION_PRUNE_COMMAND, {
+      description: "Dry-run delegation artifact pruning; pass --execute to delete planned artifacts.",
+      handler: async (args, ctx) => {
+        const { rootDir, policy } = resolveManualRetentionInput(parseDelegationPruneArgs(args));
+        const report = pruneDelegationArtifacts({ rootDir, policy, reason: "manual" });
+        const text = formatRetentionReport(report);
+        const maybeCtx = ctx as { ui?: { notify?: (message: string, level?: "info" | "warning" | "error") => void } };
+        maybeCtx.ui?.notify?.(formatRetentionSummary(report), report.errors.length > 0 ? "warning" : "info");
+        sendCommandReport(pi, text, { report });
+      },
+    });
+
     pi.registerCommand(LORE_MODELS_COMMAND, {
       description: "Open the global /lore-models routing editor.",
       handler: async (_args, ctx) => {
@@ -330,6 +390,114 @@ export default function lorePiRuntime(pi: ExtensionAPI): void {
       };
     },
   });
+}
+
+function resolveManualRetentionInput(params: Record<string, unknown>): { rootDir: string; policy: DelegationRetentionPolicyInput } {
+  const configured = loadDelegationRetentionPolicy();
+  const overrides: DelegationRetentionPolicyInput = {};
+  assignNumberOverride(overrides, "heavyLogAgeDays", params.heavyLogAgeDays);
+  assignNumberOverride(overrides, "maxAgeDays", params.maxAgeDays);
+  assignNumberOverride(overrides, "keepLast", params.keepLast);
+  assignNumberOverride(overrides, "maxScanEntries", params.maxScanEntries);
+  if (typeof params.maxTotalSize === "string" || typeof params.maxTotalSize === "number") overrides.maxTotalSize = params.maxTotalSize;
+  assignNumberOverride(overrides, "maxTotalSizeBytes", params.maxTotalSizeBytes);
+
+  const rootDir = typeof params.rootDir === "string" && params.rootDir.trim()
+    ? params.rootDir
+    : configured.rootDir ?? process.env[DELEGATIONS_ROOT_ENV] ?? DEFAULT_DELEGATIONS_ROOT;
+
+  return {
+    rootDir,
+    policy: {
+      ...configured,
+      ...overrides,
+      rootDir,
+      dryRun: params.dryRun === false ? false : true,
+    },
+  };
+}
+
+function assignNumberOverride(policy: DelegationRetentionPolicyInput, key: keyof DelegationRetentionPolicyInput, value: unknown): void {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    (policy as Record<string, unknown>)[key] = value;
+  }
+}
+
+function parseDelegationPruneArgs(args: string): Record<string, unknown> {
+  const params: Record<string, unknown> = {};
+  const tokens = args.match(/(?:[^\s"]+|"[^"]*")+/g) ?? [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index].replace(/^"|"$/g, "");
+    if (token === "--execute") {
+      params.dryRun = false;
+    } else if (token === "--dry-run") {
+      params.dryRun = true;
+    } else if (token.startsWith("--root=")) {
+      params.rootDir = token.slice("--root=".length);
+    } else if (token === "--root" && tokens[index + 1]) {
+      params.rootDir = tokens[++index].replace(/^"|"$/g, "");
+    } else if (token.startsWith("--heavy-log-age-days=")) {
+      params.heavyLogAgeDays = Number(token.slice("--heavy-log-age-days=".length));
+    } else if (token.startsWith("--max-age-days=")) {
+      params.maxAgeDays = Number(token.slice("--max-age-days=".length));
+    } else if (token.startsWith("--keep-last=")) {
+      params.keepLast = Number(token.slice("--keep-last=".length));
+    } else if (token.startsWith("--max-total-size=")) {
+      params.maxTotalSize = token.slice("--max-total-size=".length);
+    }
+  }
+  return params;
+}
+
+function failedRetentionReport(error: unknown): RetentionReport {
+  return {
+    rootDir: "",
+    dryRun: true,
+    reason: "manual",
+    protected: {},
+    skipped: { "unsafe-root": 1 },
+    planned: { files: 0, dirs: 0, bytes: 0 },
+    executed: { files: 0, dirs: 0, bytes: 0 },
+    actions: [],
+    errors: [formatError(error)],
+    durationMs: 0,
+  };
+}
+
+function formatRetentionReport(report: RetentionReport): string {
+  const would = report.dryRun ? "would-delete" : "deleted";
+  const reclaimLabel = report.dryRun ? "wouldReclaimBytes" : "reclaimedBytes";
+  const heavyFiles = report.actions.filter((action) => action.kind === "delete-file");
+  const runDirs = report.actions.filter((action) => action.kind === "delete-dir");
+  return [
+    `Delegation artifact prune ${report.dryRun ? "dry-run" : "execute"}`,
+    `root: ${report.rootDir || "(refused)"}`,
+    `${reclaimLabel}: ${report.dryRun ? report.planned.bytes : report.executed.bytes}`,
+    `${would} heavyFiles: ${heavyFiles.length}`,
+    ...heavyFiles.map((action) => `- ${action.executed ? "deleted" : "would-delete"} file ${action.path} (${action.bytes} bytes, ${action.reason})`),
+    `${would} runDirs: ${runDirs.length}`,
+    ...runDirs.map((action) => `- ${action.executed ? "deleted" : "would-delete"} dir ${action.path} (${action.bytes} bytes, ${action.reason})`),
+    `planned: files=${report.planned.files} dirs=${report.planned.dirs} bytes=${report.planned.bytes}`,
+    `executed: files=${report.executed.files} dirs=${report.executed.dirs} bytes=${report.executed.bytes}`,
+    `protected: ${formatCountRecord(report.protected)}`,
+    `skipped: ${formatCountRecord(report.skipped)}`,
+    `errors: ${report.errors.length > 0 ? report.errors.join("; ") : "(none)"}`,
+  ].join("\n");
+}
+
+function formatRetentionSummary(report: RetentionReport): string {
+  const bytes = report.dryRun ? report.planned.bytes : report.executed.bytes;
+  return `Delegation prune ${report.dryRun ? "dry-run" : "execute"}: files=${report.planned.files} dirs=${report.planned.dirs} ${report.dryRun ? "wouldReclaim" : "reclaimed"}=${bytes} bytes.`;
+}
+
+function formatCountRecord(record: Record<string, number>): string {
+  const entries = Object.entries(record);
+  return entries.length > 0 ? entries.map(([key, value]) => `${key}=${value}`).join(", ") : "(none)";
+}
+
+function sendCommandReport(pi: ExtensionAPI, content: string, details: Record<string, unknown>): void {
+  const sender = pi as unknown as SendMessageCapablePi;
+  sender.sendMessage?.({ customType: "delegation-prune", display: true, content, details }, { triggerTurn: true, deliverAs: "followUp" });
 }
 
 function createOrchestratorControls(pi: ExtensionAPI, ctx: { model?: AvailableModelDescriptor; modelRegistry?: ModelRegistryLike }) {

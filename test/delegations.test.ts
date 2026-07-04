@@ -17,10 +17,12 @@ import {
   MCP_LORE_MEMORY_TOOLS,
   OBSERVED_PREFIXED_LORE_MCP_TOOLS,
   readDelegation,
+  resetAutomaticDelegationPruningForTest,
+  scheduleAutomaticDelegationPruning,
 } from "../src/runtime/delegations.ts";
 import { resolveApprovedChildMcpAdapterExtensions } from "../src/runtime/child-mcp-adapter.ts";
 import { getContractAliasMap, getInstallPolicy, getRuntimeInvariants } from "../src/runtime/contract.ts";
-import { createRunRecord, recoverRun } from "../src/runtime/result-store.ts";
+import { createRunRecord, recoverRun, storeRunOutput } from "../src/runtime/result-store.ts";
 import { SDD_PHASES, SKILL_RESOLUTIONS } from "../src/runtime/envelopes.ts";
 import type { AgentDefinition } from "../src/runtime/types.ts";
 
@@ -337,6 +339,79 @@ test("listDelegations filters by sessionId without breaking unfiltered results",
     } else {
       process.env.LORE_PI_RUNTIME_RUN_ROOT = previousRoot;
     }
+  }
+});
+
+test("automatic delegation pruning is disabled by default and executes only when explicitly enabled", async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "lore-pi-runtime-auto-retention-"));
+  const oldRun = createRunRecord({
+    rootDir,
+    delegationId: "dg-44444444",
+    requestedAgent: "lore-worker",
+    canonicalAgent: "lore-worker",
+    cwd: "/repo",
+  });
+  storeRunOutput(oldRun, JSON.stringify({
+    status: "completed",
+    summary: "old",
+    artifacts: [],
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
+    question: null,
+    options: [],
+    risks: [],
+    skill_resolution: "none",
+  }));
+  fs.writeFileSync(oldRun.files.rawOutput, "x".repeat(10), "utf8");
+  const oldDate = new Date("2026-01-01T00:00:00.000Z");
+  for (const file of fs.readdirSync(oldRun.runDir)) fs.utimesSync(path.join(oldRun.runDir, file), oldDate, oldDate);
+  fs.utimesSync(oldRun.runDir, oldDate, oldDate);
+
+  const previousPath = process.env.LORE_PI_RUNTIME_RETENTION_PATH;
+  const previousEnabled = process.env.LORE_PI_RUNTIME_RETENTION_ENABLED;
+  const previousHeavyAge = process.env.LORE_PI_RUNTIME_RETENTION_HEAVY_LOG_AGE_DAYS;
+  const previousMaxAge = process.env.LORE_PI_RUNTIME_RETENTION_MAX_AGE_DAYS;
+  const previousCooldown = process.env.LORE_PI_RUNTIME_RETENTION_AUTO_COOLDOWN_MS;
+  try {
+    resetAutomaticDelegationPruningForTest();
+    process.env.LORE_PI_RUNTIME_RETENTION_PATH = path.join(rootDir, "missing-retention-config.json");
+    delete process.env.LORE_PI_RUNTIME_RETENTION_ENABLED;
+    assert.equal(scheduleAutomaticDelegationPruning("auto-start", rootDir), undefined);
+    assert.equal(fs.existsSync(oldRun.files.rawOutput), true);
+
+    process.env.LORE_PI_RUNTIME_RETENTION_ENABLED = "true";
+    process.env.LORE_PI_RUNTIME_RETENTION_HEAVY_LOG_AGE_DAYS = "0";
+    process.env.LORE_PI_RUNTIME_RETENTION_MAX_AGE_DAYS = "999";
+    process.env.LORE_PI_RUNTIME_RETENTION_AUTO_COOLDOWN_MS = "0";
+    resetAutomaticDelegationPruningForTest();
+    const report = await scheduleAutomaticDelegationPruning("auto-finish", rootDir);
+    assert.equal(report?.dryRun, false);
+    assert.equal(report?.executed.files, 1);
+    assert.equal(fs.existsSync(oldRun.files.rawOutput), false);
+
+    fs.writeFileSync(oldRun.files.rawOutput, "y".repeat(10), "utf8");
+    fs.utimesSync(oldRun.files.rawOutput, oldDate, oldDate);
+    process.env.LORE_PI_RUNTIME_RETENTION_AUTO_COOLDOWN_MS = "1000";
+    resetAutomaticDelegationPruningForTest();
+    const first = scheduleAutomaticDelegationPruning("auto-start", rootDir);
+    const second = scheduleAutomaticDelegationPruning("auto-finish", rootDir);
+    assert.equal(second, first);
+    await first;
+    assert.equal(scheduleAutomaticDelegationPruning("auto-finish", rootDir), undefined);
+  } finally {
+    resetAutomaticDelegationPruningForTest();
+    if (previousPath === undefined) delete process.env.LORE_PI_RUNTIME_RETENTION_PATH;
+    else process.env.LORE_PI_RUNTIME_RETENTION_PATH = previousPath;
+    if (previousEnabled === undefined) delete process.env.LORE_PI_RUNTIME_RETENTION_ENABLED;
+    else process.env.LORE_PI_RUNTIME_RETENTION_ENABLED = previousEnabled;
+    if (previousHeavyAge === undefined) delete process.env.LORE_PI_RUNTIME_RETENTION_HEAVY_LOG_AGE_DAYS;
+    else process.env.LORE_PI_RUNTIME_RETENTION_HEAVY_LOG_AGE_DAYS = previousHeavyAge;
+    if (previousMaxAge === undefined) delete process.env.LORE_PI_RUNTIME_RETENTION_MAX_AGE_DAYS;
+    else process.env.LORE_PI_RUNTIME_RETENTION_MAX_AGE_DAYS = previousMaxAge;
+    if (previousCooldown === undefined) delete process.env.LORE_PI_RUNTIME_RETENTION_AUTO_COOLDOWN_MS;
+    else process.env.LORE_PI_RUNTIME_RETENTION_AUTO_COOLDOWN_MS = previousCooldown;
   }
 });
 

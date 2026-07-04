@@ -60,12 +60,18 @@ export interface RecoveredRun {
   stderr: string | null;
 }
 
-const RECORD_FILE = "record.json";
-const STATUS_FILE = "status.json";
-const RESULT_FILE = "result.json";
-const RAW_OUTPUT_FILE = "raw-output.txt";
-const STDERR_FILE = "stderr.txt";
+export const RECORD_FILE = "record.json";
+export const STATUS_FILE = "status.json";
+export const RESULT_FILE = "result.json";
+export const RAW_OUTPUT_FILE = "raw-output.txt";
+export const STDERR_FILE = "stderr.txt";
+export const TRACE_FILE = "trace.jsonl";
+export const HEAVY_ARTIFACT_FILES = [RAW_OUTPUT_FILE, STDERR_FILE, TRACE_FILE] as const;
 const MAX_RECOVERED_TEXT_BYTES = 1024 * 1024;
+
+export function isHeavyArtifactFile(fileName: string): boolean {
+  return (HEAVY_ARTIFACT_FILES as readonly string[]).includes(fileName);
+}
 
 export function createRunRecord(input: CreateRunRecordInput): RunRecord {
   const runDir = path.join(path.resolve(input.rootDir), input.delegationId);

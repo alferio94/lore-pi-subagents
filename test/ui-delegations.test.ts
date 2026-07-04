@@ -1,8 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { createRunRecord, recoverRun, storeRunOutput } from "../src/runtime/result-store.ts";
 import {
   extractUsageSummary,
   formatSnapshotBody,
+  readDelegationSnapshot,
   type DelegationSnapshot,
 } from "../src/ui/delegations.ts";
 
@@ -22,6 +27,9 @@ function snapshot(overrides: Partial<DelegationSnapshot>): DelegationSnapshot {
     trace: "",
     rawOutput: "",
     stderr: "",
+    traceMissing: false,
+    rawOutputMissing: false,
+    stderrMissing: false,
     usage: { input: 0, output: 0, totalTokens: 0, providerTotalTokens: 0, model: "provider/model" },
     ...overrides,
   };
@@ -68,6 +76,62 @@ test("delegation detail body renders envelope snapshot instead of raw JSONL or p
   assert.doesNotMatch(body, /Live trace/);
   assert.doesNotMatch(body, /\{"type":"message_end"/);
   assert.doesNotMatch(body, /ORIGINAL PROMPT/);
+});
+
+test("delegation detail body renders missing pruned artifacts as explicit placeholders", () => {
+  const body = formatSnapshotBody(snapshot({
+    status: "failed",
+    parseError: "Could not extract an envelope.",
+    rawOutputMissing: true,
+    stderrPath: "/tmp/dg-feedbeef/stderr.txt",
+    stderrMissing: true,
+    traceMissing: true,
+  })).join("\n");
+
+  assert.match(body, /Final output\n\(raw output was pruned or is missing: \/tmp\/dg-feedbeef\/raw-output\.txt\)/);
+  assert.match(body, /Recent activity\n\(trace log was pruned or is missing: \/tmp\/dg-feedbeef\/trace\.jsonl\)/);
+  assert.match(body, /stderr\n\(stderr log was pruned or is missing: \/tmp\/dg-feedbeef\/stderr\.txt\)/);
+  assert.doesNotMatch(body, /undefined/);
+});
+
+test("delegation snapshot keeps metadata result readable after heavy artifacts are pruned", async () => {
+  const rootDir = fs.mkdtempSync(path.join(os.tmpdir(), "lore-pi-runtime-ui-"));
+  const record = createRunRecord({
+    rootDir,
+    delegationId: "dg-feedbeef",
+    requestedAgent: "sdd-apply",
+    canonicalAgent: "sdd-apply",
+    cwd: "/repo",
+    modelRef: "provider/model",
+  });
+
+  storeRunOutput(record, JSON.stringify({
+    status: "completed",
+    phase: "apply",
+    summary: "metadata remains",
+    artifacts: [],
+    files: [],
+    validations: [],
+    next_step: null,
+    continuation: null,
+    question: null,
+    options: [],
+    risks: [],
+    skill_resolution: "none",
+  }), "stderr boom");
+  fs.rmSync(record.files.rawOutput, { force: true });
+  fs.rmSync(record.files.stderr, { force: true });
+
+  const detail = await readDelegationSnapshot(record.id, (id) => {
+    assert.equal(id, record.id);
+    return recoverRun(record.runDir);
+  });
+
+  assert.equal(detail.envelope?.summary, "metadata remains");
+  assert.equal(detail.rawOutputMissing, true);
+  assert.equal(detail.stderrMissing, true);
+  assert.equal(detail.traceMissing, true);
+  assert.equal(formatSnapshotBody(detail).join("\n").includes("summary: metadata remains"), true);
 });
 
 test("delegation detail body extracts assistant final text from JSONL fallback without dumping events", () => {

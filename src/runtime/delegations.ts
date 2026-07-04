@@ -8,6 +8,7 @@ import type { AgentDefinition, AgentRegistry } from "./types.ts";
 import { isSddAgent, readModelRoutingConfig, resolveModelRoute } from "./model-routing.ts";
 import { launchChildProcess } from "./child-launch.ts";
 import { resolveApprovedChildMcpAdapterExtensions } from "./child-mcp-adapter.ts";
+import { loadDelegationRetentionPolicy, pruneDelegationArtifacts, type RetentionReason, type RetentionReport } from "./delegation-retention.ts";
 import { createRunRecord, recoverRun, storeRunOutput, type RecoveredRun, type RunRecord } from "./result-store.ts";
 import {
   RUN_STATUSES,
@@ -112,6 +113,8 @@ export interface DelegationRuntimePolicy {
 }
 
 const activeBackgroundRuns = new Map<string, Promise<void>>();
+let autoRetentionInFlight: Promise<RetentionReport | undefined> | undefined;
+let autoRetentionLastRunMs = 0;
 
 export async function startDelegation(input: StartDelegationInput): Promise<StartedDelegation> {
   const agentName = normalizeRequestedAgent(input.requestedAgent);
@@ -138,6 +141,7 @@ export async function startDelegation(input: StartDelegationInput): Promise<Star
     modelRef: route.model,
     sessionId: input.sessionId,
   });
+  scheduleAutomaticDelegationPruning("auto-start", runRoot);
 
   const childPolicy = getDelegationRuntimePolicy();
   const approvedAdapterExtensions = resolveApprovedChildMcpAdapterExtensions();
@@ -451,6 +455,34 @@ export async function finalizeChildRun(
     envelope: result.envelope,
     runDir: record.runDir,
   });
+  scheduleAutomaticDelegationPruning("auto-finish", path.dirname(record.runDir));
+}
+
+export function scheduleAutomaticDelegationPruning(reason: RetentionReason, runRoot = path.resolve(process.env[DELEGATIONS_ROOT_ENV] ?? DEFAULT_DELEGATIONS_ROOT)): Promise<RetentionReport | undefined> | undefined {
+  const policy = loadDelegationRetentionPolicy();
+  if (!policy.enabled) return undefined;
+
+  const now = Date.now();
+  if (autoRetentionInFlight) return autoRetentionInFlight;
+  if (policy.autoCooldownMs > 0 && now - autoRetentionLastRunMs < policy.autoCooldownMs) return undefined;
+
+  autoRetentionLastRunMs = now;
+  const rootDir = path.resolve(policy.rootDir ?? runRoot);
+  autoRetentionInFlight = Promise.resolve()
+    .then(() => pruneDelegationArtifacts({ rootDir, policy: { ...policy, dryRun: false }, reason }))
+    .catch((error) => {
+      console.warn(`[lore-pi-runtime] delegation artifact retention failed: ${formatError(error)}`);
+      return undefined;
+    })
+    .finally(() => {
+      autoRetentionInFlight = undefined;
+    });
+  return autoRetentionInFlight;
+}
+
+export function resetAutomaticDelegationPruningForTest(): void {
+  autoRetentionInFlight = undefined;
+  autoRetentionLastRunMs = 0;
 }
 
 function formatListedAgent(requestedAgent: string, canonicalAgent: string): string {
